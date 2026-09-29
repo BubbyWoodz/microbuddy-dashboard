@@ -39,6 +39,11 @@
  *   fields is still unconfirmed — verify the phone reads this field before
  *   calling two-way sync done.
  *
+ * PASTE-TIME AUTO-APPLY (matches the iOS app):
+ *   remembered corrections are also applied at paste time — a future paste
+ *   whose line has an empty brand gets the remembered brand filled in from
+ *   profile.brandCorrections. See the pasteSalesReport note under OP TYPES.
+ *
  * ============================================================================
  * OP TYPES (for SyncEngine.queueWrite — add these cases to sync.js applyOp):
  *
@@ -60,6 +65,14 @@
  *       every profile.brandCorrections entry with the same match; clears
  *       rawReport + reportParseVersion on changed days. No-ops when either
  *       side is blank or they match case-insensitively. Returns true.
+ *
+ *   pasteSalesReport (edit the existing case):
+ *     — When building each pasted line, if the parsed brand is blank, fill it
+ *       from the remembered correction:
+ *         const corr = (data.profile && data.profile.brandCorrections || [])
+ *           .find(c => String(c.productKey) ===
+ *             String(l.product || "").trim().toLowerCase());
+ *         brand: (l.brand && l.brand.trim()) ? l.brand : (corr ? corr.brand : "")
  *
  *   ⚠ ROUTING: all three new ops are GLOBAL (no dayId). sync.js applyOp
  *   currently does `if (!day) return false;` BEFORE the switch — global ops
@@ -144,6 +157,12 @@
   function getSkipped(data) {
     return (data && data.profile && Array.isArray(data.profile.skippedBrandCorrections))
       ? data.profile.skippedBrandCorrections : [];
+  }
+
+  /** Remembered brand for a product key, or "" — used for paste auto-apply. */
+  function rememberedBrand(data, key) {
+    const c = getCorrections(data).find(x => String(x.productKey) === key);
+    return c ? String(c.brand || "") : "";
   }
 
   function dropRawReport(day) {
@@ -290,7 +309,7 @@
 
   const BrandLogic = {
     productKey, trimWS, isBlankBrand, normName,
-    unidentifiedProducts,
+    unidentifiedProducts, rememberedBrand,
     applyCorrectionLocal, skipLocal, renameBrandLocal,
     parseAnalyzeList, matchEntries, isSKULine, cleanedSKU,
   };

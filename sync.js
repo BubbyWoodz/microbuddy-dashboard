@@ -720,10 +720,16 @@ const SyncEngine = (() => {
         order.forEach((key, index) => {
           const group = buckets[key];
           const note = key === "" ? "Pasted from the system" : key;
-          // NOTE: blank brands stay blank here — matches the iOS app, which
-          // does not auto-apply remembered brand corrections at paste time.
+          // Remembered brand corrections auto-fill blank brands on paste —
+          // matches the iOS app, which applies them at paste time too.
+          const corrections = (data.profile && data.profile.brandCorrections) || [];
           const lines = group.map(l => {
-            const brand = (l.brand && String(l.brand).trim()) ? l.brand : "";
+            let brand = (l.brand && String(l.brand).trim()) ? l.brand : "";
+            if (!brand) {
+              const pkey = String(l.product || "").replace(/^[ \t]+|[ \t]+$/g, "").toLowerCase();
+              const corr = corrections.find(c => String(c.productKey || "").toLowerCase() === pkey);
+              if (corr && corr.brand) brand = corr.brand;
+            }
             return normalizeLine({
               product: l.product, brand,
               unitPrice: l.price, quantity: l.quantity,
