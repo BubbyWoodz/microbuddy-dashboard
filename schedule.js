@@ -1,0 +1,1263 @@
+"use strict";
+/* ============ schedule.js — Schedule tab for the Micro Buddy dashboard ============
+ *
+ * Faithful port of the iOS app's Schedule tab:
+ *   ios-micro-buddy/MicroBuddy/Views/ScheduleView.swift
+ *   ios-micro-buddy/MicroBuddy/Models/Shift.swift
+ *   ios-micro-buddy/MicroBuddy/Models/StoreHours.swift
+ *   ios-micro-buddy/MicroBuddy/Services/ICSService.swift
+ *   ios-micro-buddy/MicroBuddy/Views/ScheduleSettingsView.swift
+ *   ios-micro-buddy/MicroBuddy/Views/HolidayHoursView.swift
+ *
+ * Detailed specs: /tmp/mbapp/schedule-spec-ics.md, /tmp/mbapp/schedule-spec-ui.md
+ *
+ * Data:
+ *   Shifts: data.shifts[] in the backup blob. {id,start,end,title,location,
+ *     isManual,isEdited,coworkers:[{name,start?,end?}]}. Dates are ISO8601.
+ *   Lunch: on the WorkDay: data.days[dayKey].{lunchMinutes,lunchStart,
+ *     secondLunchStart}. lunchStart/secondLunchStart are ISO8601.
+ *     Auto minutes: <5h→0, 5–<11h→60, ≥11h→90. User picks times only.
+ *   ICS URL: data.profile.icsURL. Reminders: data.profile.reminders.
+ *   Holidays: data.profile.holidayDates (["yyyy-MM-dd"]) — synced via blob.
+ *
+ * All edits go through SyncEngine.queueWrite (offline-first op queue).
+ *
+ * Parent wiring (dashboard.html):
+ *   <script src="/schedule.js"></script>
+ *   // in loadTab: if (tab === "schedule") { ScheduleUI.open(); return; }
+ *   ScheduleUI.onViewDay = (dayKey) => DayDetailUI.open(dayKey);
+ *
+ * NEW OP TYPES this module queues (parent must add to sync.js applyOp):
+ *   { type:"addShift", shift:{id,start,end,title,location,isManual,isEdited,coworkers} }
+ *   { type:"updateShift", shiftId, updates:{...} }  // set isEdited:true on hand edits
+ *   { type:"deleteShift", shiftId }
+ *   { type:"updateProfile", updates:{icsURL?,reminders?,holidayDates?,lastSyncedAt?} }
+ * Lunch uses the EXISTING updateDay op:
+ *   { type:"updateDay", dayId, updates:{lunchMinutes,lunchStart,secondLunchStart} }
+ * ===================================================================================== */
+const ScheduleUI = (() => {
+
+  const esc = s => String(s == null ? "" : s)
+    .replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  const hooks = { onViewDay: null };
+
+  function pad(n) { return String(n).padStart(2, "0"); }
+  function dayKeyOf(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
+  function parseDayKey(key) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(key || "");
+    return m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date();
+  }
+  function fmtTime(d) { return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }); }
+  function fmtTimeRange(a, b) {
+    const s = new Date(a), e = new Date(b);
+    return isNaN(s) || isNaN(e) ? "" : fmtTime(s) + " – " + fmtTime(e);
+  }
+  function startOfWeek(d) {
+    const c = new Date(d); c.setHours(0, 0, 0, 0);
+    c.setDate(c.getDate() - c.getDay()); return c;
+  }
+  function startOfDay(d) { const c = new Date(d); c.setHours(0, 0, 0, 0); return c; }
+  function uuid() {
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
+      const r = Math.random() * 16 | 0;
+      return (c === "x" ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+  }
+  function spinner(msg) { return '<div class="spinner">' + esc(msg || "Loading…") + "</div>"; }
+
+  // ---------------------------------------------------------------------------
+  // StoreHours port — Mon–Sat 10–9, Sun 11–6, holidays borrow Sunday hours.
+  // ---------------------------------------------------------------------------
+
+  let holidayDates = [];
+
+  function isSundayHours(date) {
+    return date.getDay() === 0 || holidayDates.includes(dayKeyOf(date));
+  }
+  function openAndClose(date) {
+    const sun = isSundayHours(date);
+    const open = new Date(date); open.setHours(sun ? 11 : 10, 0, 0, 0);
+    const close = new Date(date); close.setHours(sun ? 18 : 21, 0, 0, 0);
+    return { open, close };
+  }
+  function isOpeningShift(sh) { return new Date(sh.start) < openAndClose(new Date(sh.start)).open; }
+  function isClosingShift(sh) { return new Date(sh.end) > openAndClose(new Date(sh.end)).close; }
+
+  // ---------------------------------------------------------------------------
+  // Shift.swift port — overlap math
+  // ---------------------------------------------------------------------------
+
+  function shiftHours(sh) {
+    const s = new Date(sh.start).getTime(), e = new Date(sh.end).getTime();
+    return isNaN(s) || isNaN(e) ? 0 : Math.max(0, (e - s) / 3600000);
+  }
+  function shiftDayKey(sh) { return dayKeyOf(new Date(sh.start)); }
+
+  function timeParseMinutes(str) {
+    if (!str) return null;
+    const t = String(str).trim().toLowerCase().replace(/\s+/g, "");
+    let m = /^(\d{1,2})(?::(\d{2}))?([ap])\.?m?\.?$/.exec(t);
+    if (m) {
+      let h = +m[1]; const min = +(m[2] || 0);
+      if (m[3] === "p" && h < 12) h += 12;
+      if (m[3] === "a" && h === 12) h = 0;
+      return h * 60 + min;
+    }
+    m = /^(\d{1,2}):(\d{2})$/.exec(t);
+    return m ? (+m[1]) * 60 + (+m[2]) : null;
+  }
+  function reading(value, lo, hi) {
+    const c = [value, value + 720, value + 1440, value - 720];
+    const inside = c.find(x => x >= lo && x <= hi);
+    if (inside !== undefined) return inside;
+    return c.reduce((a, b) => Math.abs(b - lo) < Math.abs(a - lo) ? b : a, value);
+  }
+  function overlapHours(sh, cw) {
+    const s = new Date(sh.start), e = new Date(sh.end);
+    if (isNaN(s) || isNaN(e)) return null;
+    const uS = s.getHours() * 60 + s.getMinutes();
+    let uE = e.getHours() * 60 + e.getMinutes();
+    if (uE <= uS) uE += 1440;
+    const sv = timeParseMinutes(cw.start), ev = timeParseMinutes(cw.end);
+    if (sv == null && ev == null) return null;
+    const cS = sv != null ? reading(sv, uS, uE) : uS;
+    let cE = ev != null ? reading(ev, uS, uE + 60) : uE;
+    if (cE < cS) cE += 1440;
+    return Math.max(0, Math.min(uE, cE) - Math.max(uS, cS)) / 60;
+  }
+  function overlapSummary(sh, cw) {
+    const h = overlapHours(sh, cw);
+    if (h == null || h <= 0.05) return null;
+    const tm = Math.round(h * 60), hh = Math.floor(tm / 60), mm = tm % 60;
+    if (hh === 0) return mm + "m";
+    return mm === 0 ? hh + "h" : hh + "h " + mm + "m";
+  }
+
+  // ---------------------------------------------------------------------------
+  // WorkDay lunch — auto minutes: <5h→0, 5–<11h→60, ≥11h→90.
+  // ---------------------------------------------------------------------------
+
+  function autoLunchMinutes(h) { return h < 5 ? 0 : h >= 11 ? 90 : 60; }
+
+  // lunchSummary port — "60m lunch at 12:30 PM", "60m lunch & 30m second lunch
+  // at 12:30 PM & 5:00 PM", "no lunch".
+  function lunchSummary(day) {
+    if (!day || !(day.lunchMinutes > 0)) return "no lunch";
+    const mins = day.lunchMinutes;
+    const t1 = day.lunchStart ? fmtTime(new Date(day.lunchStart)) : null;
+    const t2 = day.secondLunchStart ? fmtTime(new Date(day.secondLunchStart)) : null;
+    if (mins >= 90 && t2) return "60m lunch & 30m second lunch at " + t1 + " & " + t2;
+    if (t1) return mins + "m lunch at " + t1;
+    return mins + "m lunch";
+  }
+
+  // ---------------------------------------------------------------------------
+  // Blob access
+  // ---------------------------------------------------------------------------
+
+  async function getBlobData() {
+    const b = await SyncEngine.getLocalBackup().catch(() => null);
+    return (b && b.data) || {};
+  }
+  async function getShifts() {
+    const d = await getBlobData();
+    const s = Array.isArray(d.shifts) ? d.shifts : [];
+    return s.slice().sort((a, b) => new Date(a.start) - new Date(b.start));
+  }
+  async function getProfile() { return (await getBlobData()).profile || {}; }
+  async function getDay(dayKey) {
+    const d = await getBlobData();
+    return (d.days && d.days[dayKey]) || null;
+  }
+  async function getDays() { return (await getBlobData()).days || {}; }
+  async function getContacts() {
+    const d = await getBlobData();
+    return Array.isArray(d.contacts) ? d.contacts : [];
+  }
+
+  // ---------------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------------
+
+  let weekStart = startOfWeek(new Date());
+  let selectedDayKey = dayKeyOf(new Date());
+  let shifts = [];
+  let profile = {};
+  let days = {};
+  let syncing = false;
+  let syncMessage = "";
+
+  const DEFAULT_REMINDERS = {
+    leaveForWorkEnabled: true, leaveForWorkMinutesBefore: 45,
+    shiftStartEnabled: true, shiftStartMinutesBefore: 15,
+    logSalesEnabled: true, logSalesMinutesAfter: 10,
+    paydayRecapEnabled: true, buddyNudgeEnabled: true, buddyOnShiftEnabled: true,
+  };
+  function reminders() { return Object.assign({}, DEFAULT_REMINDERS, profile.reminders || {}); }
+
+  // ---------------------------------------------------------------------------
+  // Week strip — month title, Today button, 7 chips, Prev/Next
+  // ---------------------------------------------------------------------------
+
+  function weekStripHTML() {
+    const todayKey = dayKeyOf(new Date());
+    const monthTitle = weekStart.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+    const chips = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekStart); d.setDate(d.getDate() + i);
+      const key = dayKeyOf(d);
+      const hasShift = shifts.some(sh => shiftDayKey(sh) === key);
+      const isSel = key === selectedDayKey, isToday = key === todayKey;
+      chips.push(
+        '<button class="week-chip' + (isSel ? " selected" : "") + (isToday && !isSel ? " today" : "") +
+        '" data-day="' + key + '">' +
+        '<span class="wc-dow">' + d.toLocaleDateString(undefined, { weekday: "short" }).toUpperCase() + "</span>" +
+        '<span class="wc-num">' + d.getDate() + "</span>" +
+        '<span class="wc-dots">' + (hasShift ? '<span class="wc-dot"></span>' : "") + "</span>" +
+        "</button>"
+      );
+    }
+    return (
+      '<div class="week-head"><div class="week-month">' + esc(monthTitle) + "</div>" +
+      '<button class="btn ghost sm" id="wk-today">Today</button></div>' +
+      '<div class="week-strip">' + chips.join("") + "</div>" +
+      '<div class="week-foot">' +
+      '<button class="btn ghost sm" id="wk-prev">‹ Prev</button>' +
+      '<button class="btn ghost sm" id="wk-next">Next ›</button>' +
+      "</div>"
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Shift cards
+  // ---------------------------------------------------------------------------
+
+  function shiftPills(sh) {
+    const out = [];
+    if (isOpeningShift(sh)) out.push('<span class="pill amber">Opening</span>');
+    if (isClosingShift(sh)) out.push('<span class="pill navy">Closing</span>');
+    out.push('<span class="pill navy">' + shiftHours(sh).toFixed(1) + " h</span>");
+    if (sh.isManual) out.push('<span class="pill manual">Manual</span>');
+    return out.join("");
+  }
+
+  function shiftCardHTML(sh) {
+    // The app always shows the full card (header, lunch editor, crew row) —
+    // the card itself is not a button. Pencil opens the edit sheet.
+    let h = '<div class="shift-card" data-shift="' + esc(sh.id) + '">';
+    h += '<div class="shift-head"><div class="shift-head-main">' +
+      '<div class="s-time">' + esc(fmtTimeRange(sh.start, sh.end)) + "</div>" +
+      '<div class="s-title">' + esc(sh.title || "Shift") +
+      (sh.location ? " · " + esc(sh.location) : "") + "</div>" +
+      "</div>" +
+      '<div class="shift-head-side"><div class="s-pills">' + shiftPills(sh) + "</div>" +
+      '<button class="icon-btn" data-act="edit-shift" title="Edit shift and lunch break times">✏️</button>' +
+      "</div></div>";
+    h += '<div class="shift-divider"></div>';
+    h += '<div class="shift-lunch" data-lunch-day="' + shiftDayKey(sh) + '" data-lunch-shift="' + esc(sh.id) + '"></div>';
+    h += '<div class="shift-divider"></div>';
+    h += '<div class="shift-crew" data-crew-shift="' + esc(sh.id) + '"></div>';
+    if (sh.isManual) {
+      h += '<button class="btn ghost danger" data-act="delete-shift">🗑 Remove shift</button>';
+    }
+    return h + "</div>";
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lunch editor — LunchTimesEditor port.
+  // Times on the WorkDay. Auto minutes from shift hours. States:
+  //  empty → "Add time" pill (seeds mid-shift, saves immediately, opens picker)
+  //  picker → saves on every change
+  //  locked → read-only pills + "Locked — edit with the pencil above"
+  // ---------------------------------------------------------------------------
+
+  // Tracks shifts whose lunch was just seeded this session (stays editable).
+  const lunchJustSeeded = new Set();
+
+  async function renderLunchEditor(el) {
+    const dayKey = el.dataset.lunchDay;
+    const shiftId = el.dataset.lunchShift;
+    const sh = shifts.find(s => s.id === shiftId);
+    if (!sh) { el.innerHTML = ""; return; }
+    const hrs = shiftHours(sh);
+    const mins = autoLunchMinutes(hrs);
+    const day = days[dayKey] || {};
+    const t1 = day.lunchStart, t2 = day.secondLunchStart;
+    const locked = !!(t1 && !lunchJustSeeded.has(shiftId));
+
+    let h = '<div class="lunch-editor">';
+    if (mins === 0) {
+      h += '<div class="li-sub">Under 5 hours — no lunch break.</div>';
+    } else {
+      const two = hrs >= 11;
+      if (!locked) {
+        h += lunchPickerRow("Lunch at", t1, dayKey, "lunchStart", mins, hrs, sh);
+        if (two) h += lunchPickerRow("Second lunch at", t2, dayKey, "secondLunchStart", mins, hrs, sh);
+        h += '<div class="li-sub">' + lunchFooter(hrs) + "</div>";
+      } else {
+        h += '<div class="lunch-row"><span>Lunch at</span>' +
+          '<span class="pill time-pill">🔒 ' + esc(fmtTime(new Date(t1))) + "</span></div>";
+        if (two && t2) {
+          h += '<div class="lunch-row"><span>Second lunch at</span>' +
+            '<span class="pill time-pill">🔒 ' + esc(fmtTime(new Date(t2))) + "</span></div>";
+        }
+        h += '<div class="li-sub">🔒 Locked — edit with the pencil above</div>';
+      }
+    }
+    el.innerHTML = h + "</div>";
+
+    if (mins > 0 && !locked) {
+      bindLunchInput(el, dayKey, "lunchStart", mins, sh, "lunch-pick-1");
+      if (hrs >= 11) bindLunchInput(el, dayKey, "secondLunchStart", mins, sh, "lunch-pick-2");
+      const addBtn = el.querySelector("[data-lunch-add]");
+      if (addBtn) addBtn.onclick = () => seedLunch(sh, dayKey, mins);
+    }
+  }
+
+  function lunchFooter(hrs) {
+    const h = Math.round(hrs);
+    if (hrs >= 11) return h + "h shift — two 30-minute breaks, 60 minutes total deducted.";
+    return h + "h shift — one 60-minute lunch auto-deducted.";
+  }
+
+  function lunchPickerRow(label, iso, dayKey, field, mins, hrs, sh) {
+    if (!iso) {
+      return '<div class="lunch-row"><span>' + esc(label) + "</span>" +
+        '<button class="pill add-pill" data-lunch-add>＋ Add time</button></div>';
+    }
+    const d = new Date(iso);
+    const v = pad(d.getHours()) + ":" + pad(d.getMinutes());
+    return '<div class="lunch-row"><span>' + esc(label) + "</span>" +
+      '<input type="time" class="time-input" data-lunch-field="' + field + '" value="' + v + '"></div>';
+  }
+
+  // "Add time": seed the picker at mid-shift and SAVE IMMEDIATELY, then the
+  // row stays editable for this session (spec §5).
+  async function seedLunch(sh, dayKey, mins) {
+    const start = new Date(sh.start);
+    const mid = new Date(start.getTime() + shiftHours(sh) * 30 * 6e4);
+    mid.setSeconds(0, 0);
+    lunchJustSeeded.add(sh.id);
+    try {
+      await SyncEngine.queueWrite({
+        type: "updateDay", dayId: dayKey,
+        updates: { lunchMinutes: mins, lunchStart: mid.toISOString() },
+      });
+      days[dayKey] = Object.assign({}, days[dayKey], { lunchMinutes: mins, lunchStart: mid.toISOString() });
+      refresh();
+    } catch (e) { alert("Couldn't save lunch time."); }
+  }
+
+  function bindLunchInput(el, dayKey, field, mins, sh, tag) {
+    const input = el.querySelector('[data-lunch-field="' + field + '"]');
+    if (!input) return;
+    input.addEventListener("change", async () => {
+      const v = input.value;
+      if (!v) return;
+      const [hh, mm] = v.split(":").map(Number);
+      const d = parseDayKey(dayKey);
+      d.setHours(hh, mm, 0, 0);
+      const updates = { lunchMinutes: mins };
+      updates[field] = d.toISOString();
+      // Shortening below 5h clears the break; below 11h clears second lunch.
+      const hrs = shiftHours(sh);
+      if (hrs < 5) { updates.lunchMinutes = 0; updates.lunchStart = null; updates.secondLunchStart = null; }
+      else if (hrs < 11 && field === "secondLunchStart") { updates.secondLunchStart = null; }
+      try {
+        await SyncEngine.queueWrite({ type: "updateDay", dayId: dayKey, updates });
+        days[dayKey] = Object.assign({}, days[dayKey], updates);
+        // stay in this session's editable mode
+      } catch (e) { alert("Couldn't save lunch time."); }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Crew editor — CoworkersRow + "Working With" sheet port.
+  // Card row: up to 4 with overlap summaries, +N more, Add/Edit button.
+  // Sheet: search "Add a name…", 4 suggestions, hours step
+  // (Same as me / Their hours), "Add to your Coworkers?" alert.
+  // ---------------------------------------------------------------------------
+
+  function crewRowHTML(sh) {
+    const crew = Array.isArray(sh.coworkers) ? sh.coworkers : [];
+    let h = '<div class="crew-editor"><div class="crew-head"><span class="section-title">Working with</span>' +
+      '<button class="btn ghost sm" data-crew-open>' + (crew.length ? "Edit" : "＋ Add") + "</button></div>";
+    if (!crew.length) {
+      h += '<button class="li-sub crew-empty" data-crew-open>Who\'s on this shift with you? Tap to add people.</button>';
+    } else {
+      const shown = crew.slice(0, 4);
+      shown.forEach(c => {
+        const nm = typeof c === "string" ? c : (c.name || "");
+        const obj = typeof c === "string" ? { name: nm } : c;
+        const ov = overlapSummary(sh, obj);
+        h += '<button class="crew-row" data-crew-open>' +
+          '<span class="avatar">' + esc(initials(nm)) + "</span>" +
+          '<span class="crew-name">' + esc(nm) + "</span>" +
+          (ov ? '<span class="li-sub">' + esc(ov) + "</span>" : "") +
+          "</button>";
+      });
+      if (crew.length > 4) h += '<button class="li-sub" data-crew-open>+' + (crew.length - 4) + " more</button>";
+    }
+    return h + "</div>";
+  }
+
+  function initials(name) {
+    return String(name || "").trim().split(/\s+/).map(w => w[0]).join("").slice(0, 2).toUpperCase() || "?";
+  }
+
+  function renderCrewEditor(el) {
+    const sh = shifts.find(s => s.id === el.dataset.crewShift);
+    el.innerHTML = sh ? crewRowHTML(sh) : "";
+    el.querySelectorAll("[data-crew-open]").forEach(b => {
+      b.onclick = ev => { ev.stopPropagation(); openCrewSheet(sh); };
+    });
+  }
+
+  // "Working With" sheet
+  let crewSheet = null;
+
+  function openCrewSheet(sh) {
+    closeCrewSheet();
+    const crew = Array.isArray(sh.coworkers) ? sh.coworkers.slice() : [];
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML =
+      '<div class="modal-card sheet"><div class="sheet-head"><h3>Working With</h3>' +
+      '<button class="btn ghost sm" id="cw-done">Done</button></div>' +
+      '<div class="li-sub">' + esc(sh.title || "Shift") + " · " + esc(fmtTimeRange(sh.start, sh.end)) + "</div>" +
+      '<div class="crew-add"><input type="search" id="cw-q" placeholder="Add a name…" autocomplete="off">' +
+      '<button class="btn ghost" id="cw-submit" disabled>＋</button></div>' +
+      '<div class="crew-results" id="cw-r"></div>' +
+      '<div id="cw-hours-step"></div>' +
+      '<div class="crew-list" id="cw-list"></div></div>';
+    document.body.appendChild(overlay);
+    crewSheet = { overlay, sh, crew, pending: null };
+
+    const renderList = () => {
+      const list = overlay.querySelector("#cw-list");
+      if (!crew.length) {
+        list.innerHTML = '<div class="empty-state"><div class="li-sub">Nobody added yet</div>' +
+          '<div class="li-sub">Start typing a name — pick from your Coworkers or add someone new.</div></div>';
+        return;
+      }
+      list.innerHTML = crew.map((c, i) => {
+        const nm = typeof c === "string" ? c : c.name;
+        const obj = typeof c === "string" ? { name: nm } : c;
+        const ov = overlapSummary(sh, obj);
+        const sub = (obj.start || obj.end)
+          ? esc((obj.start || "") + (obj.end ? "–" + obj.end : "") + (ov ? " · " + ov + " of your shift" : ""))
+          : (ov ? esc(ov + " of your shift") : "");
+        return '<div class="crew-row"><span class="avatar">' + esc(initials(nm)) + "</span>" +
+          '<span><b>' + esc(nm) + "</b>" + (sub ? '<br><span class="li-sub">' + sub + "</span>" : "") + "</span>" +
+          '<button class="icon-btn danger" data-cw-del="' + i + '">➖</button></div>';
+      }).join("");
+      list.querySelectorAll("[data-cw-del]").forEach(b => {
+        b.onclick = () => { crew.splice(+b.dataset.cwDel, 1); saveCrew(); renderList(); };
+      });
+    };
+
+    const saveCrew = async () => {
+      try {
+        await SyncEngine.queueWrite({ type: "updateShift", shiftId: sh.id, updates: { coworkers: crew } });
+        sh.coworkers = crew;
+      } catch (e) { alert("Couldn't save crew."); }
+    };
+    crewSheet.saveCrew = saveCrew;
+    crewSheet.renderList = renderList;
+
+    const q = overlay.querySelector("#cw-q");
+    const submit = overlay.querySelector("#cw-submit");
+    q.addEventListener("input", () => {
+      submit.disabled = !q.value.trim();
+      renderSuggestions(q.value);
+    });
+    submit.onclick = () => submitCrewName(q.value);
+    q.addEventListener("keydown", e => { if (e.key === "Enter" && q.value.trim()) submitCrewName(q.value); });
+    overlay.querySelector("#cw-done").onclick = async () => { await saveCrew(); closeCrewSheet(); refresh(); };
+    overlay.addEventListener("click", e => { if (e.target === overlay) closeCrewSheet(); });
+
+    renderList();
+    renderSuggestions("");
+    setTimeout(() => q.focus(), 50);
+  }
+
+  function closeCrewSheet() {
+    if (crewSheet) { crewSheet.overlay.remove(); crewSheet = null; }
+  }
+
+  async function renderSuggestions(query) {
+    if (!crewSheet) return;
+    const r = crewSheet.overlay.querySelector("#cw-r");
+    const q = query.trim().toLowerCase();
+    if (q.length < 1) { r.innerHTML = ""; return; }
+    const contacts = await getContacts();
+    const onCrew = new Set(crewSheet.crew.map(c =>
+      (typeof c === "string" ? c : c.name || "").toLowerCase()));
+    const matches = contacts
+      .filter(c => c.name && !onCrew.has(c.name.toLowerCase()) &&
+        (c.name.toLowerCase().includes(q) || (c.organization || "").toLowerCase().includes(q)))
+      .slice(0, 4);
+    r.innerHTML = matches.map(c =>
+      '<button class="crew-result" data-cw-pick="' + esc(c.name) + '">' +
+      '<span class="avatar">' + esc(initials(c.name)) + "</span>" +
+      '<span>' + esc(c.name) + (c.phone ? '<br><span class="li-sub">' + esc(c.phone) + "</span>" : "") + "</span>" +
+      '<span>＋</span></button>'
+    ).join("");
+    r.querySelectorAll("[data-cw-pick]").forEach(b => {
+      b.onclick = () => startHoursStep({ name: b.dataset.cwPick });
+    });
+  }
+
+  async function submitCrewName(raw) {
+    const name = raw.trim();
+    if (!name || !crewSheet) return;
+    const contacts = await getContacts();
+    const exact = contacts.find(c => c.name && c.name.toLowerCase() === name.toLowerCase());
+    if (exact) { startHoursStep({ name: exact.name }); return; }
+    const q = name.toLowerCase();
+    const sugg = contacts.find(c => c.name &&
+      (c.name.toLowerCase().includes(q) || (c.organization || "").toLowerCase().includes(q)));
+    if (sugg) { startHoursStep({ name: sugg.name }); return; }
+    // "Add to your Coworkers?" alert
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = '<div class="modal-card"><h3>Add to your Coworkers?</h3>' +
+      '<p>Save ' + esc(name) + ' to your Coworkers list, or just put them on this shift.</p>' +
+      '<div class="btn-row"><button class="btn primary" id="cw-as">Add &amp; save</button>' +
+      '<button class="btn" id="cw-just">Just this shift</button>' +
+      '<button class="btn ghost" id="cw-cancel">Cancel</button></div></div>';
+    document.body.appendChild(overlay);
+    overlay.querySelector("#cw-cancel").onclick = () => overlay.remove();
+    overlay.querySelector("#cw-just").onclick = () => { overlay.remove(); startHoursStep({ name }); };
+    overlay.querySelector("#cw-as").onclick = async () => {
+      overlay.remove();
+      const parts = name.split(/\s+/);
+      const contact = {
+        id: uuid(), firstName: parts[0] || "", lastName: parts.slice(1).join(" "),
+        name, createdAt: new Date().toISOString(),
+      };
+      try {
+        // addContact op may not exist yet — fall back to shift-only.
+        await SyncEngine.queueWrite({ type: "addContact", contact }).catch(() => null);
+      } catch (e) {}
+      startHoursStep({ name });
+    };
+  }
+
+  // Hours step: "Same as me" / "Their hours"
+  function startHoursStep(person) {
+    if (!crewSheet) return;
+    const sh = crewSheet.sh;
+    const step = crewSheet.overlay.querySelector("#cw-hours-step");
+    const range = fmtTimeRange(sh.start, sh.end);
+    step.innerHTML =
+      '<div class="panel"><b>' + esc(person.name) + '</b><div class="li-sub">What hours do they work?</div>' +
+      '<div class="seg-row">' +
+      '<button class="seg-btn selected" data-hmode="same">Same as me</button>' +
+      '<button class="seg-btn" data-hmode="theirs">Their hours</button></div>' +
+      '<div class="li-sub" id="cw-same-label">🕐 Same shift as you: ' + esc(range) + "</div>" +
+      '<div id="cw-their-times" hidden><div class="field-row2">' +
+      '<div class="field"><label>Starts</label><input type="time" id="cw-ts" value="' +
+      pad(new Date(sh.start).getHours()) + ":" + pad(new Date(sh.start).getMinutes()) + '"></div>' +
+      '<div class="field"><label>Ends</label><input type="time" id="cw-te" value="' +
+      pad(new Date(sh.end).getHours()) + ":" + pad(new Date(sh.end).getMinutes()) + '"></div>' +
+      "</div></div>" +
+      '<div class="btn-row"><button class="btn primary" id="cw-add2">Add to shift</button>' +
+      '<button class="btn ghost" id="cw-x">✕</button></div></div>';
+
+    let mode = "same";
+    step.querySelectorAll("[data-hmode]").forEach(b => {
+      b.onclick = () => {
+        mode = b.dataset.hmode;
+        step.querySelectorAll("[data-hmode]").forEach(x =>
+          x.classList.toggle("selected", x === b));
+        step.querySelector("#cw-their-times").hidden = mode !== "theirs";
+        step.querySelector("#cw-same-label").style.display = mode === "same" ? "" : "none";
+      };
+    });
+    step.querySelector("#cw-x").onclick = () => { step.innerHTML = ""; crewSheet.pending = null; };
+    step.querySelector("#cw-add2").onclick = async () => {
+      const entry = { name: person.name };
+      if (mode === "theirs") {
+        const ts = step.querySelector("#cw-ts").value, te = step.querySelector("#cw-te").value;
+        if (ts) entry.start = fmtTime(parseTimeOnDay(ts, sh.start));
+        if (te) entry.end = fmtTime(parseTimeOnDay(te, sh.start));
+      } else {
+        entry.start = fmtTime(new Date(sh.start));
+        entry.end = fmtTime(new Date(sh.end));
+      }
+      if (crewSheet.crew.some(c =>
+        (typeof c === "string" ? c : c.name || "").toLowerCase() === person.name.toLowerCase())) {
+        step.innerHTML = ""; return;
+      }
+      crewSheet.crew.push(entry);
+      await crewSheet.saveCrew();
+      crewSheet.renderList();
+      step.innerHTML = "";
+      crewSheet.overlay.querySelector("#cw-q").value = "";
+      crewSheet.overlay.querySelector("#cw-r").innerHTML = "";
+    };
+  }
+
+  function parseTimeOnDay(hhmm, refISO) {
+    const [h, m] = hhmm.split(":").map(Number);
+    const d = new Date(refISO);
+    d.setHours(h, m, 0, 0);
+    return d;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Manual shift add/edit sheet — ManualShiftView port.
+  // New defaults: 10:00 AM – 6:00 PM. Edit: "Your times win…".
+  // ---------------------------------------------------------------------------
+
+  function openShiftEditor(existing) {
+    const isNew = !existing;
+    let s, e;
+    if (existing) { s = new Date(existing.start); e = new Date(existing.end); }
+    else {
+      // Default on selected day (or today): 10:00 AM – 6:00 PM.
+      s = parseDayKey(selectedDayKey); s.setHours(10, 0, 0, 0);
+      e = parseDayKey(selectedDayKey); e.setHours(18, 0, 0, 0);
+    }
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML =
+      '<div class="modal-card"><h3>' + (isNew ? "Add Shift" : "Edit Shift") + "</h3>" +
+      '<div class="field"><label>Date</label><input type="date" id="se-date" value="' + dayKeyOf(s) + '"></div>' +
+      '<div class="field-row2">' +
+      '<div class="field"><label>Starts</label><input type="time" id="se-start" value="' +
+      pad(s.getHours()) + ":" + pad(s.getMinutes()) + '"></div>' +
+      '<div class="field"><label>Ends</label><input type="time" id="se-end" value="' +
+      pad(e.getHours()) + ":" + pad(e.getMinutes()) + '"></div>' +
+      "</div>" +
+      '<div class="field"><label>Title</label><input type="text" id="se-title" placeholder="Shift" value="' +
+      esc(existing ? existing.title || "" : "") + '"></div>' +
+      '<div class="field"><label>Location</label><input type="text" id="se-loc" value="' +
+      esc(existing ? existing.location || "" : "") + '"></div>' +
+      (isNew ? "" : '<div class="li-sub">Your times win — a UKG re-sync keeps this edit.</div>') +
+      '<div class="form-status" id="se-err" hidden></div>' +
+      '<div class="btn-row">' +
+      '<button class="btn primary" id="se-save">' + (isNew ? "Add shift" : "Save changes") + "</button>" +
+      '<button class="btn ghost" id="se-cancel">Cancel</button>' +
+      "</div></div>";
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    overlay.querySelector("#se-cancel").onclick = close;
+    overlay.addEventListener("click", ev => { if (ev.target === overlay) close(); });
+    overlay.querySelector("#se-save").onclick = async () => {
+      const d = overlay.querySelector("#se-date").value;
+      const st = overlay.querySelector("#se-start").value;
+      const en = overlay.querySelector("#se-end").value;
+      const err = overlay.querySelector("#se-err");
+      const start = new Date(d + "T" + st + ":00"), end = new Date(d + "T" + en + ":00");
+      if (!d || !st || !en || isNaN(start) || isNaN(end) || end <= start) {
+        err.textContent = "End time must come after the start.";
+        err.hidden = false;
+        return;
+      }
+      const title = overlay.querySelector("#se-title").value.trim() || "Shift";
+      const location = overlay.querySelector("#se-loc").value.trim();
+      try {
+        if (isNew) {
+          await SyncEngine.queueWrite({
+            type: "addShift",
+            shift: {
+              id: uuid(), start: start.toISOString(), end: end.toISOString(),
+              title, location, isManual: true, isEdited: false, coworkers: [],
+            },
+          });
+        } else {
+          await SyncEngine.queueWrite({
+            type: "updateShift", shiftId: existing.id,
+            updates: {
+              start: start.toISOString(), end: end.toISOString(),
+              title, location, isEdited: true,
+            },
+          });
+        }
+        close();
+        await reload();
+      } catch (ex) { alert("Couldn't save shift."); }
+    };
+  }
+
+  async function deleteShiftFlow(sh) {
+    if (!confirm("Remove this shift?\n\n" + fmtTimeRange(sh.start, sh.end) +
+      " — this also deletes the lunch and crew saved on it.")) return;
+    try {
+      await SyncEngine.queueWrite({ type: "deleteShift", shiftId: sh.id });
+      await reload();
+    } catch (e) { alert("Couldn't delete shift."); }
+  }
+
+  // ---------------------------------------------------------------------------
+  // ICS sync — ICSService.swift port + exact mergeShifts
+  // ---------------------------------------------------------------------------
+
+  function normalizeICSURL(raw) {
+    let u = String(raw || "").trim();
+    if (/^webcal:\/\//i.test(u)) u = u.replace(/^webcal:\/\//i, "https://");
+    try {
+      const p = new URL(u);
+      return /^https?:$/.test(p.protocol) ? u : null;
+    } catch (e) { return null; }
+  }
+
+  function icsClean(s) {
+    return String(s || "").replace(/\\,/g, ",").replace(/\\;/g, ";").replace(/\\n/gi, " ").trim();
+  }
+
+  function icsDate(value, params) {
+    const v = String(value || "").trim();
+    if (!v) return null;
+    if (/Z$/i.test(v)) {
+      const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/i.exec(v);
+      return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])) : null;
+    }
+    const tm = /TZID=([^;:]+)/i.exec(params || "");
+    const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})$/.exec(v);
+    if (m) {
+      const Y = +m[1], Mo = +m[2] - 1, D = +m[3], h = +m[4], mi = +m[5], s = +m[6];
+      if (tm) {
+        const tz = tm[1];
+        try {
+          const asUTC = Date.UTC(Y, Mo, D, h, mi, s);
+          const inTz = new Date(new Date(asUTC).toLocaleString("en-US", { timeZone: tz }));
+          const inUTC = new Date(new Date(asUTC).toLocaleString("en-US", { timeZone: "UTC" }));
+          return new Date(asUTC + (inUTC - inTz));
+        } catch (e) { /* unknown TZ → device-local */ }
+      }
+      return new Date(Y, Mo, D, h, mi, s);
+    }
+    const d8 = /^(\d{4})(\d{2})(\d{2})$/.exec(v);
+    return d8 ? new Date(+d8[1], +d8[2] - 1, +d8[3]) : null;
+  }
+
+  function parseICS(text) {
+    const unfolded = String(text || "")
+      .replace(/\r\n[ \t]/g, "").replace(/\n[ \t]/g, "").replace(/\r\n/g, "\n");
+    const events = [];
+    let cur = null;
+    for (const line of unfolded.split("\n")) {
+      if (line === "BEGIN:VEVENT") { cur = {}; continue; }
+      if (line === "END:VEVENT") { if (cur) events.push(cur); cur = null; continue; }
+      if (!cur) continue;
+      const ci = line.indexOf(":");
+      if (ci < 0) continue;
+      const rawKey = line.slice(0, ci), val = line.slice(ci + 1);
+      const key = rawKey.split(";")[0];
+      cur[key] = val;
+      if (key === "DTSTART" || key === "DTEND") cur[key + "_PARAMS"] = rawKey;
+    }
+    const out = [];
+    for (const ev of events) {
+      const start = icsDate(ev.DTSTART, ev.DTSTART_PARAMS);
+      const end = icsDate(ev.DTEND, ev.DTEND_PARAMS);
+      if (!start || !end) continue;
+      out.push({
+        id: (ev.UID || "").trim() || uuid(),
+        start: start.toISOString(), end: end.toISOString(),
+        title: icsClean(ev.SUMMARY) || "Shift",
+        location: icsClean(ev.LOCATION),
+        isManual: false, isEdited: false, coworkers: [],
+      });
+    }
+    out.sort((a, b) => new Date(a.start) - new Date(b.start));
+    return out;
+  }
+
+  // Exact port of mergeShifts(from:).
+  function mergeShifts(local, fetched) {
+    const merged = local.map(s => Object.assign({}, s));
+    const sameTimes = (a, b) =>
+      new Date(a.start).getTime() === new Date(b.start).getTime() &&
+      new Date(a.end).getTime() === new Date(b.end).getTime();
+    for (const f of fetched) {
+      const idx = merged.findIndex(e => e.id === f.id || sameTimes(e, f));
+      if (idx >= 0) {
+        const ex = merged[idx];
+        const updated = Object.assign({}, f);
+        updated.id = ex.id;
+        updated.coworkers = ex.coworkers || [];
+        if (ex.isEdited) {
+          updated.start = ex.start; updated.end = ex.end;
+          updated.title = ex.title; updated.isEdited = true;
+        }
+        merged[idx] = updated;
+      } else merged.push(Object.assign({}, f));
+    }
+    const todayStart = startOfDay(new Date()).getTime();
+    const kept = merged.filter(s => {
+      if (s.isManual) return true;
+      if (startOfDay(new Date(s.start)).getTime() <= todayStart) return true;
+      return fetched.some(x => x.id === s.id || sameTimes(x, s));
+    });
+    kept.sort((a, b) => new Date(a.start) - new Date(b.start));
+    return { merged: kept, fetchedCount: fetched.length };
+  }
+
+  async function syncCalendar(quiet) {
+    const url = (profile.icsURL || "").trim();
+    if (!url) { if (!quiet) { syncMessage = "Add your UKG calendar link first."; refresh(); } return; }
+    const norm = normalizeICSURL(url);
+    if (!norm) { if (!quiet) { syncMessage = "That doesn't look like a valid calendar link."; refresh(); } return; }
+    if (syncing) return;
+    syncing = true;
+    if (!quiet) { syncMessage = ""; refresh(); }
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 30000);
+      let res;
+      try { res = await fetch(norm, { signal: ctrl.signal }); }
+      finally { clearTimeout(timer); }
+      if (!res.ok) throw new Error("Couldn't reach the calendar: server responded " + res.status + ".");
+      const fetched = parseICS(await res.text());
+      if (!fetched.length) throw new Error("The calendar loaded but had no shifts in it.");
+      const { merged } = mergeShifts(shifts, fetched);
+      for (const s of shifts.filter(x => !merged.some(m => m.id === x.id))) {
+        await SyncEngine.queueWrite({ type: "deleteShift", shiftId: s.id });
+      }
+      for (const m of merged) {
+        if (shifts.some(s => s.id === m.id)) {
+          await SyncEngine.queueWrite({ type: "updateShift", shiftId: m.id, updates: m });
+        } else {
+          await SyncEngine.queueWrite({ type: "addShift", shift: m });
+        }
+      }
+      shifts = merged;
+      const nowISO = new Date().toISOString();
+      await SyncEngine.queueWrite({
+        type: "updateProfile", updates: { icsURL: url, lastSyncedAt: nowISO },
+      }).catch(() => {});
+      profile.icsURL = url; profile.lastSyncedAt = nowISO;
+      syncMessage = "Synced " + fetched.length + " shifts.";
+      refreshReminders();
+    } catch (e) {
+      if (!quiet) syncMessage = e.message || "Sync failed.";
+    } finally {
+      syncing = false;
+      if (!quiet) refresh();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reminders — Notification API, per-shift fire times
+  // ---------------------------------------------------------------------------
+
+  function reminderStatus() {
+    return ("Notification" in window) ? Notification.permission : "unsupported";
+  }
+  async function ensureNotificationPermission() {
+    if (!("Notification" in window)) return false;
+    if (Notification.permission === "granted") return true;
+    if (Notification.permission === "denied") return false;
+    try { return (await Notification.requestPermission()) === "granted"; }
+    catch (e) { return false; }
+  }
+
+  function computeReminders() {
+    const r = reminders(), now = Date.now(), out = [];
+    const upcoming = shifts.filter(s => new Date(s.end).getTime() > now - 36e5)
+      .sort((a, b) => new Date(a.start) - new Date(b.start)).slice(0, 30);
+    for (const sh of upcoming) {
+      const start = new Date(sh.start).getTime(), end = new Date(sh.end).getTime();
+      const label = (sh.title || "Shift") + " " + fmtTimeRange(sh.start, sh.end);
+      if (r.leaveForWorkEnabled)
+        out.push({ at: new Date(start - r.leaveForWorkMinutesBefore * 6e4),
+          title: "Leave for work", body: label + " — time to head out." });
+      if (r.shiftStartEnabled)
+        out.push({ at: new Date(start - r.shiftStartMinutesBefore * 6e4),
+          title: "Shift starting", body: label + " — clock in soon." });
+      if (r.logSalesEnabled) {
+        const mins = r.logSalesMinutesAfter;
+        out.push({ at: new Date(end + mins * 6e4), title: "Log your sales",
+          body: mins === 0 ? "Shift over — log the day." : "Shift ended " + mins + "m ago — log the day." });
+      }
+    }
+    return out.filter(x => x.at.getTime() > now).sort((a, b) => a.at - b.at);
+  }
+
+  let reminderTimers = [];
+  function refreshReminders() {
+    reminderTimers.forEach(clearTimeout); reminderTimers = [];
+    if (reminderStatus() !== "granted") return;
+    const horizon = Date.now() + 12 * 36e5; // best-effort while page is open
+    for (const rm of computeReminders()) {
+      const t = rm.at.getTime();
+      if (t > horizon) break;
+      reminderTimers.push(setTimeout(() => {
+        try { new Notification(rm.title, { body: rm.body }); } catch (e) {}
+      }, Math.max(0, t - Date.now())));
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // "Coming up" — next 8 shifts
+  // ---------------------------------------------------------------------------
+
+  function crewLine(sh) {
+    const crew = (sh.coworkers || []).map(c => typeof c === "string" ? c : c.name).filter(Boolean);
+    if (!crew.length) return "";
+    const shown = crew.slice(0, 4).join(", ");
+    return "With " + shown + (crew.length > 4 ? " +" + (crew.length - 4) + " more" : "");
+  }
+
+  function comingUpHTML() {
+    const now = Date.now();
+    const next = shifts.filter(s => new Date(s.end).getTime() > now)
+      .sort((a, b) => new Date(a.start) - new Date(b.start)).slice(0, 8);
+    let h = '<div class="section-title">Coming up</div><div class="li-sub">Your next shifts</div>';
+    if (!next.length) {
+      return h + '<div class="empty-state"><div class="li-sub">No upcoming shifts</div>' +
+        '<div class="li-sub">Sync your UKG calendar to fill this in.</div></div>';
+    }
+    h += '<div class="coming-up">';
+    next.forEach(sh => {
+      const d = new Date(sh.start);
+      const day = days[shiftDayKey(sh)] || {};
+      const lunch = lunchSummary(day);
+      h += '<button class="coming-row" data-jump-week="' + dayKeyOf(d) + '" data-shift="' + esc(sh.id) + '">' +
+        '<span class="cu-date"><span class="cu-mon">' +
+        d.toLocaleDateString(undefined, { month: "short" }).toUpperCase() + "</span>" +
+        '<span class="cu-day">' + d.getDate() + "</span></span>" +
+        '<span class="cu-main"><span class="cu-dow">' +
+        d.toLocaleDateString(undefined, { weekday: "long" }) + "</span>" +
+        '<span class="cu-time">' + esc(fmtTimeRange(sh.start, sh.end)) + "</span>" +
+        (crewLine(sh) ? '<span class="li-sub">' + esc(crewLine(sh)) + "</span>" : "") +
+        (lunch !== "no lunch" ? '<span class="li-sub amber">' + esc(lunch) + "</span>" : "") +
+        '</span><span class="cu-hours">' + shiftHours(sh).toFixed(1) + "h</span></button>";
+    });
+    return h + "</div>";
+  }
+
+  // ---------------------------------------------------------------------------
+  // Selected-day section — date header, shifts, View-day link
+  // ---------------------------------------------------------------------------
+
+  function selectedDayHTML() {
+    const d = parseDayKey(selectedDayKey);
+    const dayShifts = shifts.filter(sh => shiftDayKey(sh) === selectedDayKey)
+      .sort((a, b) => new Date(a.start) - new Date(b.start));
+    let h = '<div class="section-title">' +
+      d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }) + "</div>" +
+      '<div class="li-sub">' + (dayShifts.length
+        ? dayShifts.length + " shift" + (dayShifts.length > 1 ? "s" : "")
+        : "No shift scheduled") + "</div>";
+    if (!dayShifts.length) {
+      h += '<div class="empty-state"><div class="empty-ico">🌙</div><b>Day off</b>' +
+        '<div class="li-sub">Nothing scheduled. Enjoy it — or add a shift manually from the menu.</div></div>';
+    } else {
+      h += dayShifts.map(shiftCardHTML).join("");
+    }
+    // "View day" link when the day has logged sales.
+    const day = days[selectedDayKey];
+    const commission = day && day.commissionTotal;
+    if (commission > 0) {
+      h += '<button class="view-day-row" data-view-day="' + selectedDayKey + '">' +
+        '<span>💵 ' + esc("$" + Number(commission).toFixed(2)) + ' earned</span>' +
+        '<span>View day ›</span></button>';
+    }
+    return h;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Settings — ICS, holidays, reminders
+  // ---------------------------------------------------------------------------
+
+  const LEAVE_OPTS = [20, 30, 45, 60, 90];
+  const START_OPTS = [5, 10, 15, 30];
+  const LOG_OPTS = [0, 10, 30, 60];
+
+  function lastSyncText() {
+    if (!(profile.icsURL || "").trim()) return "No calendar linked yet";
+    if (!profile.lastSyncedAt) return "Never synced";
+    const d = new Date(profile.lastSyncedAt);
+    return "Last synced " + d.toLocaleDateString(undefined, { weekday: "short" }) +
+      " at " + fmtTime(d) + " · " + shifts.length + " shifts";
+  }
+
+  function settingsHTML() {
+    const r = reminders(), icsURL = profile.icsURL || "";
+    let h = '<div class="section-title">Schedule settings</div>';
+
+    h += '<div class="panel"><div class="sched-card-title">UKG calendar</div>' +
+      '<div class="li-sub">Paste your iCal subscription link</div>' +
+      '<div class="field"><input type="url" id="ics-url" value="' + esc(icsURL) +
+      '" placeholder="https://…/schedule.ics" autocomplete="off" spellcheck="false"></div>' +
+      '<div class="btn-row"><button class="btn primary" id="ics-sync"' +
+      (syncing || !icsURL.trim() ? " disabled" : "") + ">" +
+      (syncing ? "Syncing…" : "Sync schedule now") + "</button></div>" +
+      (syncMessage ? '<div class="form-status">' + esc(syncMessage) + "</div>" : "") +
+      '<div class="li-sub">🍴 Lunch is automatic: one 60-minute break on 5–11h shifts, ' +
+      "two 30-minute breaks on 11h+ shifts, none under 5h. Set the times on each shift above.</div>" +
+      '<div class="li-sub">📅 ' + esc(lastSyncText()) + "</div></div>";
+
+    const nHol = holidayDates.length;
+    h += '<div class="panel"><button class="sched-nav-row" id="hol-open">' +
+      "<span>🗓️ <b>Holiday hours</b><br><span class=\"li-sub\">" +
+      (nHol ? nHol + " date(s) with Sunday hours" : "Weekdays that open 11 AM–6 PM") +
+      '</span></span><span class="chev">›</span></button>' +
+      '<div id="hol-editor" hidden></div></div>';
+
+    h += '<div class="panel"><div class="sched-card-title">Reminders</div>';
+    const perm = reminderStatus();
+    if (perm === "denied") {
+      h += '<div class="warn-banner">Notifications are off. Turn them on in your browser settings to get reminders.</div>';
+    } else if (perm === "default") {
+      h += '<div class="btn-row"><button class="btn ghost sm" id="notif-enable">Enable notifications</button></div>';
+    }
+    h += reminderRowHTML("leaveForWorkEnabled", "Leave for work", "Heads-up before you need to head out",
+      r, "leaveForWorkMinutesBefore", LEAVE_OPTS, "before");
+    h += reminderRowHTML("shiftStartEnabled", "Shift starting", "A nudge right before you clock in",
+      r, "shiftStartMinutesBefore", START_OPTS, "before");
+    h += reminderRowHTML("logSalesEnabled", "Log your sales", "After your shift ends, log the day",
+      r, "logSalesMinutesAfter", LOG_OPTS, "after");
+    h += '<div class="sched-card-title" style="margin-top:8px">Proactive</div>' +
+      '<div class="li-sub">Buddy speaks up on his own</div>';
+    h += simpleToggleRow("paydayRecapEnabled", "Payday recap",
+      "Payday morning: what the finished period paid you", r);
+    h += simpleToggleRow("buddyNudgeEnabled", "Weekly nudge",
+      "Monday morning: how last week went vs the week before", r);
+    h += '<div class="btn-row"><button class="btn primary" id="rem-save">Save reminders</button></div></div>';
+
+    h += '<div class="btn-row"><button class="btn" id="shift-add">＋ Add shift manually</button></div>';
+    return h;
+  }
+
+  function reminderRowHTML(toggleKey, title, sub, r, minKey, opts, suffix) {
+    const on = !!r[toggleKey];
+    let h = '<div class="rem-row"><label class="switch-row"><span><b>' + esc(title) +
+      '</b><br><span class="li-sub">' + esc(sub) + "</span></span>" +
+      '<input type="checkbox" data-rem-toggle="' + toggleKey + '"' + (on ? " checked" : "") + "></label>";
+    if (on) {
+      h += '<div class="opt-pills">' + opts.map(o =>
+        '<button class="opt-pill' + (r[minKey] === o ? " selected" : "") +
+        '" data-rem-min="' + minKey + '" data-val="' + o + '">' +
+        (o === 0 && suffix === "after" ? "Right away" : o + "m " + suffix) + "</button>"
+      ).join("") + "</div>";
+    }
+    return h + "</div>";
+  }
+
+  function simpleToggleRow(key, title, sub, r) {
+    return '<div class="rem-row"><label class="switch-row"><span><b>' + esc(title) +
+      '</b><br><span class="li-sub">' + esc(sub) + "</span></span>" +
+      '<input type="checkbox" data-rem-toggle="' + key + '"' +
+      (r[key] ? " checked" : "") + "></label></div>";
+  }
+
+  function bindSettings(box) {
+    const icsInput = box.querySelector("#ics-url");
+    if (icsInput) icsInput.addEventListener("change", async () => {
+      const v = icsInput.value.trim();
+      try {
+        await SyncEngine.queueWrite({ type: "updateProfile", updates: { icsURL: v } });
+        profile.icsURL = v; syncMessage = "";
+      } catch (e) { alert("Couldn't save calendar link."); }
+      refresh();
+    });
+    const syncBtn = box.querySelector("#ics-sync");
+    if (syncBtn) syncBtn.onclick = () => syncCalendar(false);
+    const notifBtn = box.querySelector("#notif-enable");
+    if (notifBtn) notifBtn.onclick = async () => { await ensureNotificationPermission(); refresh(); };
+    box.querySelectorAll("[data-rem-min]").forEach(pill => {
+      pill.onclick = () => {
+        const key = pill.dataset.remMin;
+        box.querySelectorAll('[data-rem-min="' + key + '"]').forEach(p =>
+          p.classList.toggle("selected", p === pill));
+      };
+    });
+    const saveBtn = box.querySelector("#rem-save");
+    if (saveBtn) saveBtn.onclick = saveReminders;
+    const holOpen = box.querySelector("#hol-open");
+    if (holOpen) holOpen.onclick = () => {
+      const ed = box.querySelector("#hol-editor");
+      ed.hidden = !ed.hidden;
+      if (!ed.hidden) renderHolidayEditor(ed);
+    };
+    const addBtn = box.querySelector("#shift-add");
+    if (addBtn) addBtn.onclick = () => openShiftEditor(null);
+  }
+
+  async function saveReminders() {
+    const box = document.getElementById("sched-body");
+    const r = Object.assign({}, DEFAULT_REMINDERS);
+    box.querySelectorAll("[data-rem-toggle]").forEach(t => { r[t.dataset.remToggle] = t.checked; });
+    box.querySelectorAll("[data-rem-min].selected").forEach(p => { r[p.dataset.remMin] = +p.dataset.val; });
+    try {
+      await SyncEngine.queueWrite({ type: "updateProfile", updates: { reminders: r } });
+      profile.reminders = r;
+      if (await ensureNotificationPermission()) refreshReminders();
+      alert("Reminders saved.");
+      refresh();
+    } catch (e) { alert("Couldn't save reminders."); }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Holiday hours editor — HolidayHoursView port
+  // ---------------------------------------------------------------------------
+
+  function renderHolidayEditor(el) {
+    const sorted = holidayDates.slice().sort();
+    let h = '<div class="sched-card-title">Add a date</div>' +
+      '<div class="li-sub">Open 11 AM–6 PM that day</div>' +
+      '<div class="crew-add"><input type="date" id="hol-date"> ' +
+      '<button class="btn primary sm" id="hol-add">＋ Add holiday</button></div>' +
+      '<div class="sched-card-title" style="margin-top:10px">Sunday-hours dates</div>' +
+      '<div class="li-sub">' + (sorted.length ? sorted.length + " date(s)" : "No holidays saved") + "</div>";
+    if (!sorted.length) {
+      h += '<div class="li-sub">Certain holidays — like the Fourth of July — run Sunday hours ' +
+        "on a weekday. Add each date and the app treats it like a Sunday.</div>";
+    }
+    sorted.forEach(dk => {
+      const d = parseDayKey(dk);
+      h += '<div class="crew-row"><span>' +
+        d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) +
+        '<br><span class="li-sub">11 AM–6 PM</span></span>' +
+        '<button class="icon-btn danger" data-hol-remove="' + dk + '" title="Remove">🗑</button></div>';
+    });
+    h += '<div class="li-sub" style="margin-top:8px">Sunday runs 11 AM–6 PM and every other day stays ' +
+      "10 AM–9 PM — these dates just borrow the Sunday hours. Opening and closing pay follow automatically.</div>";
+    el.innerHTML = h;
+
+    const dateInput = el.querySelector("#hol-date");
+    const addBtn = el.querySelector("#hol-add");
+    const checkDup = () => {
+      const v = dateInput.value;
+      const dup = v && holidayDates.includes(v);
+      addBtn.disabled = !v || dup;
+      addBtn.innerHTML = dup ? "✓ Already saved" : "＋ Add holiday";
+    };
+    dateInput.addEventListener("change", checkDup);
+    checkDup();
+    addBtn.onclick = () => {
+      const v = dateInput.value;
+      if (!v || holidayDates.includes(v)) return;
+      updateHolidays(holidayDates.concat([v]).sort());
+    };
+    el.querySelectorAll("[data-hol-remove]").forEach(b => {
+      b.onclick = () => updateHolidays(holidayDates.filter(x => x !== b.dataset.holRemove));
+    });
+  }
+
+  async function updateHolidays(next) {
+    try {
+      await SyncEngine.queueWrite({ type: "updateProfile", updates: { holidayDates: next } });
+      holidayDates = next;
+      refresh();
+    } catch (e) { alert("Couldn't save holidays."); }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
+  async function reload() {
+    const data = await getBlobData();
+    shifts = (Array.isArray(data.shifts) ? data.shifts : [])
+      .slice().sort((a, b) => new Date(a.start) - new Date(b.start));
+    profile = data.profile || {};
+    days = data.days || {};
+    holidayDates = Array.isArray(profile.holidayDates) ? profile.holidayDates : [];
+    refresh();
+  }
+
+  function refresh() {
+    const box = document.getElementById("sched-body");
+    if (!box) return;
+    let h = '<div class="sched-toolbar">' +
+      '<button class="btn ghost sm" id="tb-sync">⟳ Sync now</button>' +
+      '<button class="btn ghost sm" id="tb-add">＋ Add shift</button>' +
+      '<button class="btn ghost sm" id="tb-rem">🔔 Reminders</button></div>';
+    h += weekStripHTML();
+    h += selectedDayHTML();
+    h += comingUpHTML();
+    h += settingsHTML();
+    box.innerHTML = h;
+
+    // Toolbar
+    box.querySelector("#tb-sync").onclick = () => syncCalendar(false);
+    box.querySelector("#tb-add").onclick = () => openShiftEditor(null);
+    box.querySelector("#tb-rem").onclick = () => {
+      const p = box.querySelector("#rem-save");
+      if (p) p.scrollIntoView({ behavior: "smooth", block: "center" });
+    };
+
+    // Week strip
+    box.querySelector("#wk-prev").onclick = () => {
+      const d = parseDayKey(selectedDayKey); d.setDate(d.getDate() - 7);
+      weekStart = startOfWeek(d); selectedDayKey = dayKeyOf(d); refresh();
+    };
+    box.querySelector("#wk-next").onclick = () => {
+      const d = parseDayKey(selectedDayKey); d.setDate(d.getDate() + 7);
+      weekStart = startOfWeek(d); selectedDayKey = dayKeyOf(d); refresh();
+    };
+    box.querySelector("#wk-today").onclick = () => {
+      weekStart = startOfWeek(new Date()); selectedDayKey = dayKeyOf(new Date()); refresh();
+    };
+    box.querySelectorAll(".week-chip").forEach(chip => {
+      chip.onclick = () => { selectedDayKey = chip.dataset.day; refresh(); };
+    });
+
+    // Shift cards (not tappable — pencil opens edit, crew opens sheet)
+    box.querySelectorAll(".shift-card").forEach(card => {
+      const id = card.dataset.shift;
+      const sh = shifts.find(s => s.id === id);
+      if (!sh) return;
+      const ed = card.querySelector('[data-act="edit-shift"]');
+      if (ed) ed.onclick = ev => { ev.stopPropagation(); openShiftEditor(sh); };
+      const del = card.querySelector('[data-act="delete-shift"]');
+      if (del) del.onclick = ev => { ev.stopPropagation(); deleteShiftFlow(sh); };
+    });
+    box.querySelectorAll(".shift-lunch").forEach(renderLunchEditor);
+    box.querySelectorAll(".shift-crew").forEach(renderCrewEditor);
+
+    // View-day links
+    box.querySelectorAll("[data-view-day]").forEach(b => {
+      b.onclick = () => { if (hooks.onViewDay) hooks.onViewDay(b.dataset.viewDay); };
+    });
+
+    // Coming-up jump (stays on Schedule)
+    box.querySelectorAll("[data-jump-week]").forEach(btn => {
+      btn.onclick = () => {
+        const d = parseDayKey(btn.dataset.jumpWeek);
+        weekStart = startOfWeek(d);
+        selectedDayKey = btn.dataset.jumpWeek;
+        const jumpId = btn.dataset.shift;
+        refresh();
+        setTimeout(() => {
+          const el = box.querySelector('[data-shift="' + CSS.escape(jumpId) + '"]');
+          if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 50);
+      };
+    });
+
+    bindSettings(box);
+    refreshReminders();
+  }
+
+  async function open() {
+    const box = document.getElementById("sched-body");
+    if (!box) return;
+    box.innerHTML = spinner("Loading schedule…");
+    try { await reload(); }
+    catch (e) { box.innerHTML = '<div class="panel">Couldn\'t load schedule.</div>'; }
+  }
+
+  return {
+    open,
+    refresh,
+    parseICS,
+    mergeShifts,
+    normalizeICSURL,
+    autoLunchMinutes,
+    lunchSummary,
+    overlapSummary,
+    isOpeningShift,
+    isClosingShift,
+    computeReminders,
+    set onViewDay(fn) { hooks.onViewDay = fn; },
+  };
+})();
