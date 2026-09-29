@@ -39,9 +39,8 @@
  *
  * OPT-IN / OPT-OUT
  *   The app pushes daily rows on every save; there is no server-side toggle.
- *   The dashboard adds a per-device "Share my numbers" switch (default ON,
- *   matching the app). Turning it OFF deletes this user's leaderboard_daily
- *   rows so peers stop seeing them, and stops future pushes.
+ *   Like the app, the dashboard always shares while signed in — there is
+ *   no dashboard-only "Share my numbers" switch.
  *
  * PARENT WIRING (dashboard.html — the parent does this, not this file):
  *   <script src="/leaderboard.js"></script>   (after sb.js, sync.js, payengine.js)
@@ -84,7 +83,6 @@ const LeaderboardUI = (() => {
   }
 
   // ------------------------------------------------------- state & config
-  const LS_SHARING = "mb_leaderboard_sharing_v1";
   const RANGES = [
     { id: "today", label: "Today" },
     { id: "thisWeek", label: "Week" },
@@ -109,15 +107,10 @@ const LeaderboardUI = (() => {
   // Called as onLinkPeer(peer) -> Promise<boolean> (true = handled & linked).
   let onLinkPeer = null;
 
-  function isSharingEnabled() {
-    try {
-      const v = localStorage.getItem(LS_SHARING);
-      return v === null ? true : v === "1";
-    } catch (e) { return true; }
-  }
-  function setSharingEnabled(on) {
-    try { localStorage.setItem(LS_SHARING, on ? "1" : "0"); } catch (e) {}
-  }
+  // No dashboard-only sharing switch: sharing is always on while signed
+  // in, matching the app. Kept as functions for the internal guards below.
+  function isSharingEnabled() { return true; }
+  function setSharingEnabled(on) {}
 
   // ------------------------------------------------------- supabase plumbing
   // We need the `Prefer: resolution=merge-duplicates` header for the daily
@@ -216,11 +209,6 @@ const LeaderboardUI = (() => {
   async function pushDailyStats(rows) {
     await sbFetch("POST", "leaderboard_daily",
       { body: rows, prefer: "resolution=merge-duplicates" });
-  }
-
-  async function deleteMyRows(userID) {
-    await sbFetch("DELETE",
-      "leaderboard_daily?user_id=eq." + encodeURIComponent(userID));
   }
 
   async function fetchSharedStats() {
@@ -571,13 +559,6 @@ const LeaderboardUI = (() => {
     .lb-range { padding:6px 12px; border-radius:999px; border:1px solid var(--border);
       background:transparent; color:var(--muted); font-size:13px; font-weight:600; cursor:pointer; }
     .lb-range.active { background:var(--accent); border-color:var(--accent); color:#fff; }
-    .lb-share { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--muted); }
-    .lb-switch { position:relative; width:40px; height:22px; border-radius:999px;
-      background:var(--border); border:none; cursor:pointer; transition:background .15s; flex:none; }
-    .lb-switch::after { content:""; position:absolute; top:3px; left:3px; width:16px; height:16px;
-      border-radius:50%; background:#fff; transition:left .15s; }
-    .lb-switch.on { background:var(--accent); }
-    .lb-switch.on::after { left:21px; }
     .lb-flash { display:flex; align-items:center; gap:8px; padding:10px 14px; border-radius:12px;
       background:var(--card); border:1px solid var(--border); font-size:13px; font-weight:600; }
     .lb-row { display:flex; align-items:center; gap:10px; padding:12px 10px; }
@@ -734,7 +715,7 @@ const LeaderboardUI = (() => {
     let h = `<div class="lb-wrap"><div id="lb-flash-slot"></div>`;
     h += `<div class="lb-toolbar"><div class="lb-ranges">` +
       RANGES.map(r => `<button class="lb-range${range === r.id ? " active" : ""}" data-lb-range="${r.id}">${r.label}</button>`).join("") +
-      `</div><label class="lb-share"><button class="lb-switch${isSharingEnabled() ? " on" : ""}" id="lb-share-toggle" role="switch" aria-checked="${isSharingEnabled()}"></button>Share my numbers</label></div>`;
+      `</div></div>`;
     if (!hasAny) {
       h += emptyHTML();
     } else {
@@ -761,8 +742,6 @@ const LeaderboardUI = (() => {
   function bindStatic() {
     container.querySelectorAll("[data-lb-range]").forEach(b =>
       b.addEventListener("click", () => { range = b.dataset.lbRange; refresh(); }));
-    const t = container.querySelector("#lb-share-toggle");
-    if (t) t.addEventListener("click", () => toggleSharing());
     const r = container.querySelector("#lb-retry");
     if (r) r.addEventListener("click", () => refresh());
     const a1 = container.querySelector("#lb-add-btn");
@@ -781,27 +760,6 @@ const LeaderboardUI = (() => {
       b.addEventListener("click", () => cancelFlow(b.dataset.lbCancel)));
     root.querySelectorAll("[data-lb-link]").forEach(b =>
       b.addEventListener("click", () => linkFlow(b.dataset.lbLink)));
-  }
-
-  async function toggleSharing() {
-    const on = !isSharingEnabled();
-    if (!on) {
-      if (!confirm("Stop sharing your numbers? Your past leaderboard rows will be removed and peers won't see you anymore.")) return;
-      setSharingEnabled(false);
-      render();
-      try {
-        const session = await SB.getValidSession();
-        await deleteMyRows(session.user_id);
-        flash("Sharing off — you're off the board");
-      } catch (e) {
-        flash("Couldn't remove shared rows: " + (e.message || "error"));
-      }
-      return;
-    }
-    setSharingEnabled(true);
-    render();
-    flash("Sharing on — pushing your numbers");
-    schedulePush();
   }
 
   async function acceptFlow(requestID) {

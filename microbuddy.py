@@ -913,23 +913,16 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/widget-icon":
             # Homepage widget icon: the user's current theme icon.
-            # Falls back to default if no theme icon set yet.
-            data = None
-            for p in ("/app/tile-icon.png", "/app/icons/icon-512.png"):
-                try:
-                    with open(p, "rb") as f:
-                        data = f.read()
-                    break
-                except OSError:
-                    continue
-            if data:
+            try:
+                with open("/app/tile-icon.png", "rb") as f:
+                    data = f.read()
                 self.send_response(200)
                 self.send_header("Content-Type", "image/png")
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
                 self.wfile.write(data)
-            else:
+            except OSError:
                 self.send_response(404)
                 self.end_headers()
             return
@@ -1171,14 +1164,15 @@ class Handler(BaseHTTPRequestHandler):
                             "terminal": "icon-terminal.png",
                             "win95": "icon-win95.png"}
                 icon_file = icon_map.get(theme, "icon-og.png")
-                src_icon = os.path.join(APP_DIR, "icons", icon_file)
+                src_icon = os.path.join(BASE_DIR, "icons", icon_file)
                 dst_icon = "/app/tile-icon.png"
-                if os.path.exists(src_icon):
+                # /app/tile-icon.png only exists in the Docker deployment
+                # (bind-mounted to the Umbrel app tile). Skip the swap when
+                # running directly as a process.
+                if os.path.exists(src_icon) and os.path.isdir(os.path.dirname(dst_icon)):
                     shutil.copyfile(src_icon, dst_icon)
-                    self._send(200, json.dumps({"ok": True, "theme": theme,
-                                                "icon": icon_file}).encode())
-                else:
-                    self._send(404, json.dumps({"error": "icon not found"}).encode())
+                self._send(200, json.dumps({"ok": True, "theme": theme,
+                                            "icon": icon_file}).encode())
             except Exception as e:
                 self._send(500, json.dumps({"error": str(e)}).encode())
             return
