@@ -913,16 +913,23 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/widget-icon":
             # Homepage widget icon: the user's current theme icon.
-            try:
-                with open("/app/tile-icon.png", "rb") as f:
-                    data = f.read()
+            # Falls back to default if no theme icon set yet.
+            data = None
+            for p in ("/app/tile-icon.png", "/app/icons/icon-512.png"):
+                try:
+                    with open(p, "rb") as f:
+                        data = f.read()
+                    break
+                except OSError:
+                    continue
+            if data:
                 self.send_response(200)
                 self.send_header("Content-Type", "image/png")
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
                 self.wfile.write(data)
-            except OSError:
+            else:
                 self.send_response(404)
                 self.end_headers()
             return
