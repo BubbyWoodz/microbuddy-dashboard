@@ -1,0 +1,268 @@
+/* ============ themes.css — Micro Buddy dashboard themes ============
+ * Theme system based on CSS variables. The active theme is set via
+ *   document.documentElement.setAttribute("data-theme", "<name>")
+ * Themes: dark (default), win95, frosted, terminal.
+ * Component styles in dashboard.html reference these variables, so
+ * switching themes is instant and works fully offline.
+ */
+
+/* ---------- DARK (default) ---------- */
+:root,
+[data-theme="dark"] {
+  --bg: #0d1017;
+  --bg2: #11151d;
+  --card: #171c26;
+  --card2: #1d2330;
+  --border: #262d3d;
+  --text: #e8ecf3;
+  --muted: #8b94a7;
+  --accent: #34d399;
+  --accent-dim: rgba(52, 211, 153, 0.12);
+  --blue: #60a5fa;
+  --blue-dim: rgba(96, 165, 250, 0.12);
+  --amber: #fbbf24;
+  --amber-dim: rgba(251, 191, 36, 0.12);
+  --red: #f87171;
+  --red-dim: rgba(248, 113, 113, 0.12);
+  --radius: 14px;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --header-bg: rgba(13, 16, 23, 0.92);
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  color-scheme: dark;
+}
+
+/* ---------- WIN95 ---------- */
+/* Matches Christian's iOS app Win95 theme: teal desktop, raised gray panels
+   with classic bevels (white top-left, dark bottom-right), black text. */
+[data-theme="win95"] {
+  --bg: #008080;
+  --bg2: #007070;
+  --card: #c0c0c0;
+  --card2: #b5b5b5;
+  --border: #808080;
+  --text: #000000;
+  --muted: #404040;
+  --accent: #000080;
+  --accent-dim: rgba(0, 0, 128, 0.12);
+  --blue: #000080;
+  --blue-dim: rgba(0, 0, 128, 0.12);
+  --amber: #7a5c00;
+  --amber-dim: rgba(122, 92, 0, 0.15);
+  --red: #a00000;
+  --red-dim: rgba(160, 0, 0, 0.12);
+  --radius: 0px;
+  --font: "MS Sans Serif", Tahoma, Geneva, -apple-system, sans-serif;
+  --mono: "Courier New", ui-monospace, monospace;
+  --header-bg: #008080;
+  --shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
+  color-scheme: light;
+}
+[data-theme="win95"] body { font-size: 14px; }
+[data-theme="win95"] header {
+  background: var(--header-bg);
+  border-bottom: 2px solid #004040;
+}
+[data-theme="win95"] header h1 { color: #000; }
+[data-theme="win95"] header h1 span { color: #000080; }
+[data-theme="win95"] header .sub { color: #003333; }
+[data-theme="win95"] nav.tabs {
+  background: #008080;
+  border-bottom: 2px solid #004040;
+}
+/* Classic raised bevel for panels and cards */
+[data-theme="win95"] .card,
+[data-theme="win95"] .panel,
+[data-theme="win95"] .ticket,
+[data-theme="win95"] .shift-block,
+[data-theme="win95"] .detail-grid .mini {
+  border: 2px solid;
+  border-color: #ffffff #808080 #808080 #ffffff;
+  border-radius: 0;
+  box-shadow: 1px 1px 0 #000000;
+}
+/* Sunken bevel for inputs */
+[data-theme="win95"] input[type="text"],
+[data-theme="win95"] input[type="search"],
+[data-theme="win95"] input[type="date"],
+[data-theme="win95"] input[type="password"],
+[data-theme="win95"] input[type="url"],
+[data-theme="win95"] select,
+[data-theme="win95"] textarea {
+  background: #ffffff;
+  color: #000000;
+  border: 2px solid;
+  border-color: #808080 #ffffff #ffffff #808080;
+  border-radius: 0;
+}
+[data-theme="win95"] input:focus { border-color: #808080 #ffffff #ffffff #808080; outline: 1px dotted #000; outline-offset: -4px; }
+/* Chunky Win95 buttons */
+[data-theme="win95"] .btn,
+[data-theme="win95"] .refresh-btn,
+[data-theme="win95"] .tab-btn {
+  background: #c0c0c0;
+  color: #000000;
+  border: 2px solid;
+  border-color: #ffffff #808080 #808080 #ffffff;
+  border-radius: 0;
+  box-shadow: 1px 1px 0 #000000;
+}
+[data-theme="win95"] .btn:active,
+[data-theme="win95"] .refresh-btn:active,
+[data-theme="win95"] .tab-btn:active {
+  border-color: #808080 #ffffff #ffffff #808080;
+  box-shadow: none;
+  transform: translate(1px, 1px);
+}
+[data-theme="win95"] .tab-btn.active {
+  background: #000080;
+  color: #ffffff;
+  border-color: #808080 #ffffff #ffffff #808080;
+}
+[data-theme="win95"] .table-wrap { border: 2px solid; border-color: #808080 #ffffff #ffffff #808080; border-radius: 0; }
+[data-theme="win95"] thead th { background: #000080; color: #ffffff; }
+[data-theme="win95"] tbody td { border-top: 1px solid #808080; }
+[data-theme="win95"] tbody tr.day-row:hover td { background: rgba(0, 0, 128, 0.08); }
+[data-theme="win95"] .pill { border-radius: 0; border: 1px solid #808080; }
+[data-theme="win95"] .pill.live { background: #000080; color: #fff; }
+[data-theme="win95"] .coworker-chip { border-radius: 0; background: #000080; color: #fff; }
+[data-theme="win95"] .rank { border-radius: 0; background: #808080; color: #fff; }
+[data-theme="win95"] .kind-tag { border-radius: 0; }
+[data-theme="win95"] .login-card,
+[data-theme="win95"] .sync-card { color: #000; }
+[data-theme="win95"] #login-gate { background: #008080; }
+[data-theme="win95"] .login-logo { background: #c0c0c0; border: 2px solid; border-color: #ffffff #808080 #808080 #ffffff; color: #000080; border-radius: 0; }
+[data-theme="win95"] #apple-signin-btn { border-radius: 0; }
+/* Chat bubbles */
+[data-theme="win95"] .chat-msg.user .chat-bubble { background: #000080; color: #fff; border-radius: 0; }
+[data-theme="win95"] .chat-msg.assistant .chat-bubble {
+  background: #c0c0c0; color: #000; border-radius: 0;
+  border: 2px solid; border-color: #ffffff #808080 #808080 #ffffff;
+}
+
+/* ---------- FROSTED (liquid glass) ---------- */
+[data-theme="frosted"] {
+  --bg: #0a0e1a;
+  --bg2: rgba(20, 26, 44, 0.6);
+  --card: rgba(255, 255, 255, 0.07);
+  --card2: rgba(255, 255, 255, 0.11);
+  --border: rgba(255, 255, 255, 0.14);
+  --text: #f2f5fb;
+  --muted: #a3adc2;
+  --accent: #5eead4;
+  --accent-dim: rgba(94, 234, 212, 0.12);
+  --blue: #93c5fd;
+  --blue-dim: rgba(147, 197, 253, 0.12);
+  --amber: #fcd34d;
+  --amber-dim: rgba(252, 211, 77, 0.12);
+  --red: #fca5a5;
+  --red-dim: rgba(252, 165, 165, 0.12);
+  --radius: 20px;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --header-bg: rgba(10, 14, 26, 0.6);
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+[data-theme="frosted"] body {
+  background:
+    radial-gradient(1200px 600px at 15% -5%, rgba(94, 234, 212, 0.10), transparent 60%),
+    radial-gradient(1000px 700px at 90% 10%, rgba(147, 197, 253, 0.12), transparent 60%),
+    radial-gradient(900px 900px at 50% 110%, rgba(167, 139, 250, 0.10), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
+}
+[data-theme="frosted"] .card,
+[data-theme="frosted"] .panel,
+[data-theme="frosted"] .ticket,
+[data-theme="frosted"] .shift-block,
+[data-theme="frosted"] .detail-grid .mini {
+  backdrop-filter: blur(22px) saturate(1.4);
+  -webkit-backdrop-filter: blur(22px) saturate(1.4);
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+[data-theme="frosted"] header,
+[data-theme="frosted"] nav.tabs {
+  backdrop-filter: blur(24px) saturate(1.5);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+}
+[data-theme="frosted"] .btn {
+  background: linear-gradient(135deg, rgba(94,234,212,0.9), rgba(147,197,253,0.9));
+  color: #06281c;
+  box-shadow: 0 4px 16px rgba(94, 234, 212, 0.25);
+}
+[data-theme="frosted"] .tab-btn.active {
+  background: rgba(94, 234, 212, 0.16);
+  border-color: rgba(94, 234, 212, 0.5);
+  color: var(--accent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* ---------- TERMINAL ---------- */
+[data-theme="terminal"] {
+  --bg: #000000;
+  --bg2: #050505;
+  --card: #000000;
+  --card2: #0a0a0a;
+  --border: #1e90ff;
+  --text: #33ff66;
+  --muted: #1f8f3f;
+  --accent: #33ff66;
+  --accent-dim: rgba(51, 255, 102, 0.08);
+  --blue: #1e90ff;
+  --blue-dim: rgba(30, 144, 255, 0.10);
+  --amber: #ffcc00;
+  --amber-dim: rgba(255, 204, 0, 0.10);
+  --red: #ff4444;
+  --red-dim: rgba(255, 68, 68, 0.10);
+  --radius: 4px;
+  --font: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --header-bg: #000000;
+  --shadow: none;
+  color-scheme: dark;
+}
+[data-theme="terminal"] body { font-family: var(--font); font-size: 14px; text-shadow: 0 0 6px rgba(51, 255, 102, 0.35); }
+[data-theme="terminal"] .card,
+[data-theme="terminal"] .panel,
+[data-theme="terminal"] .ticket,
+[data-theme="terminal"] .shift-block,
+[data-theme="terminal"] .detail-grid .mini,
+[data-theme="terminal"] .table-wrap {
+  border: 1px solid var(--border); /* thin blue tile borders */
+  border-radius: var(--radius);
+  box-shadow: none;
+  background: #000;
+}
+[data-theme="terminal"] header { border-bottom: 1px solid var(--border); background: #000; }
+[data-theme="terminal"] header h1 span { color: var(--blue); }
+[data-theme="terminal"] nav.tabs { border-bottom: 1px solid var(--border); background: #000; }
+[data-theme="terminal"] .tab-btn { border: 1px solid var(--border); background: #000; color: var(--muted); border-radius: var(--radius); }
+[data-theme="terminal"] .tab-btn.active { background: rgba(30, 144, 255, 0.15); border-color: var(--blue); color: var(--blue); }
+[data-theme="terminal"] .btn { background: #003300; color: var(--accent); border: 1px solid var(--accent); border-radius: var(--radius); }
+[data-theme="terminal"] .btn.ghost { background: #000; color: var(--muted); border: 1px solid var(--border); }
+[data-theme="terminal"] input[type="text"],
+[data-theme="terminal"] input[type="search"],
+[data-theme="terminal"] input[type="date"],
+[data-theme="terminal"] input[type="password"],
+[data-theme="terminal"] input[type="url"],
+[data-theme="terminal"] select,
+[data-theme="terminal"] textarea {
+  background: #000; color: var(--accent); border: 1px solid var(--border);
+  border-radius: var(--radius); font-family: var(--mono); caret-color: var(--accent);
+}
+[data-theme="terminal"] thead th { background: #001122; color: var(--blue); }
+[data-theme="terminal"] tbody td { border-top: 1px solid rgba(30, 144, 255, 0.25); }
+[data-theme="terminal"] .pill { border: 1px solid var(--border); background: #000; }
+[data-theme="terminal"] .pill.live { color: var(--accent); border-color: var(--accent); }
+[data-theme="terminal"] .coworker-chip { background: rgba(30,144,255,0.12); color: var(--blue); border: 1px solid var(--border); }
+[data-theme="terminal"] .spinner::after { border-top-color: var(--accent); }
+[data-theme="terminal"] #login-gate { background: #000; }
+[data-theme="terminal"] .login-logo { background: #001100; border: 1px solid var(--accent); color: var(--accent); }
+[data-theme="terminal"] .chat-msg.user .chat-bubble { background: #002200; border: 1px solid var(--accent); color: var(--accent); }
+[data-theme="terminal"] .chat-msg.assistant .chat-bubble { background: #000; border: 1px solid var(--border); color: var(--text); }
+
+/* ---------- shared: apply font variable ---------- */
+body { font-family: var(--font); }
+.mono, code, .sku { font-family: var(--mono); }
