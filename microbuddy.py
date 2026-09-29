@@ -176,6 +176,22 @@ def _supabase_rest(method: str, path: str, access_token: str,
         raise ValueError(f"Supabase {method} {path} -> HTTP {e.code}: {detail}")
 
 
+def _fmt_money(v) -> str:
+    try:
+        return f"${float(v):,.0f}"
+    except (TypeError, ValueError):
+        return "$0"
+
+
+def _pay_period_containing(day: datetime.date):
+    # Biweekly pay periods anchored on iOS payday Sep 18, 2026.
+    anchor = datetime.date(2026, 9, 18)
+    delta = (day - anchor).days
+    n = delta // 14
+    start = anchor + datetime.timedelta(days=n * 14)
+    return start, start + datetime.timedelta(days=13)
+
+
 def _mint_mcp_token(user_id: str, access_token: str) -> str:
     """Mint a per-user MCP token for this dashboard pairing.
 
@@ -861,6 +877,56 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         qs = parse_qs(parsed.query)
 
+        if path == "/widget":
+            # Homepage widget: current pay-period stats for the paired user.
+            # Dashes until someone pairs (no token = no data, not an error).
+            try:
+                with open("/app/.widget_token") as f:
+                    wtoken = f.read().strip()
+            except OSError:
+                wtoken = ""
+            if not wtoken:
+                self._send(200, json.dumps({
+                    "sold": "–", "returns": "–", "made": "–",
+                    "cph": "–", "products": "–", "period": "",
+                }).encode())
+                return
+            try:
+                today = datetime.date.today()
+                start, end = _pay_period_containing(today)
+                stats = mcp_call("get_stats", {
+                    "start": start.isoformat(), "end": end.isoformat(),
+                }, wtoken)
+                taxes = stats.get("estimated_taxes", {}) or {}
+                self._send(200, json.dumps({
+                    "sold": _fmt_money(stats.get("sold_for_company_total", 0)),
+                    "returns": _fmt_money(stats.get("returns_total", 0)),
+                    "made": _fmt_money(taxes.get("estimated_take_home", 0)),
+                    "cph": f"{float(stats.get('cph', 0)):.2f}",
+                    "products": str(int(stats.get("items_total", 0))),
+                    "period": f"{start.strftime('%b %-d')}–{end.strftime('%b %-d')}",
+                }).encode())
+            except Exception as e:
+                self._send(502, json.dumps(
+                    {"error": str(e)[:200]}).encode())
+            return
+
+        if path == "/widget-icon":
+            # Homepage widget icon: the user's current theme icon.
+            try:
+                with open("/app/tile-icon.png", "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(data)
+            except OSError:
+                self.send_response(404)
+                self.end_headers()
+            return
+
         if path == "/api/health":
             self._send(200, json.dumps({
                 "ok": True,
@@ -1179,6 +1245,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps(
                     {"error": f"couldn't set up data access: {e}"}).encode())
                 return
+            # Homepage widget token: whoever pairs with this dashboard owns
+            # the widget — each server shows its own user's stats.
+            try:
+                _wt = os.path.join(BASE_DIR, ".widget_token")
+                with open(_wt, "w") as f:
+                    f.write(mcp_token)
+                os.chmod(_wt, 0o600)
+            except Exception as e:
+                print(f"[pair] warning: couldn't write widget token: {e}",
+                      flush=True)
             # Legacy server-side session too, so the current server-rendered
             # pages keep working until the frontend becomes a full client.
             sid = self._new_session({
