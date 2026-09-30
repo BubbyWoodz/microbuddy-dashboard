@@ -912,9 +912,18 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/widget-icon":
-            # Homepage widget icon: the user's current theme icon.
+            # Homepage widget icon: theme-aware via ?theme= parameter.
+            # Themes: dark, win95, frosted, terminal. Defaults to OG icon.
+            theme = (qs.get("theme") or [""])[0].strip().lower()
+            icon_map = {
+                "win95": "icons/icon-win95.png",
+                "terminal": "icons/icon-terminal.png",
+                "frosted": "icons/icon-modern.png",
+                "dark": "icons/icon-og.png",
+            }
+            icon_file = icon_map.get(theme, "icons/icon-og.png")
             try:
-                with open("/app/tile-icon.png", "rb") as f:
+                with open(os.path.join(BASE_DIR, icon_file), "rb") as f:
                     data = f.read()
                 self.send_response(200)
                 self.send_header("Content-Type", "image/png")
