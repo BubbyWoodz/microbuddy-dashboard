@@ -117,7 +117,7 @@ APP_BUNDLE_ID = _read_secret("APPLE_APP_BUNDLE_ID", ".apple_app_id")
 # reboot. Unlink (/api/pair/revoke) and /logout clear it and re-save, so a
 # wiped login can never be resurrected by a restart.
 SESSIONS: dict[str, dict] = {}
-DASHBOARD_VERSION = "1.1.9"
+DASHBOARD_VERSION = "1.1.10"
 SESSIONS_FILE = os.path.join(BASE_DIR, ".sessions.json")
 _rpc_id = 0
 
@@ -1334,18 +1334,39 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/pair/revoke":
-            # Public: the iPhone app calls this when the user unlinks a
-            # dashboard. The phone holds no dashboard session of its own, so
-            # unlink revokes everything this dashboard handed out: pending
-            # pair codes, all browser sessions, and the homepage widget token.
-            # Stale per-user MCP token rows in Supabase are cleaned up by the
-            # next claim (_mint_mcp_token deletes the user's old dashboard
-            # tokens before minting a fresh one); the raw tokens themselves
-            # only ever lived in server memory and .widget_token, both of
-            # which are cleared here.
-            PAIRINGS.clear()
-            SESSIONS.clear()
+            # Authenticated: the iPhone app calls this when the user unlinks
+            # a dashboard, sending its Supabase access_token. We verify the
+            # token and revoke ONLY that user's sessions (not everyone's).
+            # This prevents anyone on the network from logging out the
+            # dashboard.
+            body = self._read_json_body()
+            rtoken = str(body.get("access_token", "")).strip()
+            if not rtoken:
+                self._send(401, json.dumps(
+                    {"error": "access_token required"}).encode())
+                return
+            try:
+                ruser = _supabase_get_user(rtoken)
+            except Exception:
+                self._send(401, json.dumps(
+                    {"error": "invalid session"}).encode())
+                return
+            ruser_id = str(ruser.get("id", ""))
+            if not ruser_id:
+                self._send(401, json.dumps(
+                    {"error": "invalid session"}).encode())
+                return
+            # Revoke only this user's sessions.
+            revoked = 0
+            for sid in list(SESSIONS.keys()):
+                if SESSIONS[sid].get("sub") == ruser_id:
+                    del SESSIONS[sid]
+                    revoked += 1
             _save_sessions()
+            # Clear pending pair codes (they're short-lived anyway).
+            PAIRINGS.clear()
+            # Clear the widget token if this user owned it. The widget shows
+            # whoever paired last; unlinking removes it.
             try:
                 wt = os.path.join(BASE_DIR, ".widget_token")
                 if os.path.exists(wt):
@@ -1353,7 +1374,16 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 print(f"[pair] warning: couldn't remove widget token: {e}",
                       flush=True)
-            self._send(200, json.dumps({"ok": True}).encode())
+            # Also delete this user's dashboard MCP token from Supabase so
+            # it can't be reused.
+            try:
+                _supabase_rest("DELETE", "mcp_tokens", rtoken,
+                               query=f"?user_id=eq.{ruser_id}&label=eq.dashboard")
+            except Exception as e:
+                print(f"[pair] warning: couldn't delete dashboard token: {e}",
+                      flush=True)
+            self._send(200, json.dumps({"ok": True,
+                                        "revoked_sessions": revoked}).encode())
             return
 
         # Everything below requires a session.
