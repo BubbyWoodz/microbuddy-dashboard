@@ -80,6 +80,21 @@ const SettingsUI = (() => {
       '<button class="btn ghost" id="clear-chat">Clear</button></div>' +
       '<div class="list-item" style="border:none"><div class="li-main">Sign out<div class="li-sub">On this device only</div></div>' +
       '<button class="btn ghost" id="signout-btn">Sign out</button></div>' +
+      "</div>" +
+      '<div class="section-title">Dashboard</div>' +
+      '<div class="panel">' +
+      '<div class="li-sub" style="margin-bottom:10px">Dashboard-only settings — these never leave this browser.</div>' +
+      '<div class="list-item"><div class="li-main">Screen lock<div class="li-sub" id="screen-lock-sub">Optional password after idle</div></div>' +
+      '<button class="btn ghost" id="screen-lock-toggle">Off</button></div>' +
+      '<div class="list-item"><div class="li-main">Lock after<div class="li-sub">Idle time before the password appears</div></div>' +
+      '<select id="screen-lock-timeout" style="width:auto">' +
+      '<option value="1">1 minute</option><option value="5">5 minutes</option>' +
+      '<option value="15">15 minutes</option><option value="30">30 minutes</option>' +
+      '<option value="60">1 hour</option></select></div>' +
+      '<div class="list-item" style="border:none"><div class="li-main">Password<div class="li-sub">Forgot it? Unlink from the iPhone app to reset</div></div>' +
+      '<button class="btn ghost" id="screen-lock-pw">Set password</button></div>' +
+      '<div class="btn-row"><button class="btn ghost" id="screen-lock-now">Lock now</button>' +
+      '<span id="screen-lock-status" class="form-status" style="margin:0"></span></div>' +
       "</div>";
 
     // Theme picker
@@ -147,6 +162,68 @@ const SettingsUI = (() => {
       }
       BuddyUI.reset();
     });
+    // ---- Dashboard: screen lock (dashboard-only, optional) ----
+    try {
+      const slStatus = document.getElementById("screen-lock-status");
+      const slToggle = document.getElementById("screen-lock-toggle");
+      const slTimeout = document.getElementById("screen-lock-timeout");
+      const slPwBtn = document.getElementById("screen-lock-pw");
+      const slSub = document.getElementById("screen-lock-sub");
+      const slSay = (m) => { if (slStatus) { slStatus.textContent = m; setTimeout(() => { slStatus.textContent = ""; }, 4000); } };
+      const slRefresh = () => {
+        const st = ScreenLock.getState();
+        slToggle.textContent = st.enabled ? "On" : "Off";
+        slTimeout.value = String(st.timeoutMin);
+        slPwBtn.textContent = st.hasPassword ? "Change password" : "Set password";
+        if (slSub) slSub.textContent = st.enabled
+          ? "On — locks after " + st.timeoutMin + " min idle"
+          : "Optional password after idle";
+      };
+      slToggle.addEventListener("click", () => {
+        const st = ScreenLock.getState();
+        if (!st.enabled) {
+          if (!st.hasPassword) {
+            const pw = prompt("Choose a screen-lock password (min 4 characters):");
+            if (pw === null) return;
+            const r = ScreenLock.setPassword(pw);
+            if (!r.ok) { slSay(r.error); return; }
+            slSay("Screen lock on.");
+          } else {
+            ScreenLock.setEnabled(true);
+            slSay("Screen lock on.");
+          }
+        } else {
+          const pw = prompt("Enter your current password to turn the lock off:");
+          if (pw === null) return;
+          if (!ScreenLock.verify(pw)) { slSay("Wrong password."); return; }
+          ScreenLock.setEnabled(false);
+          slSay("Screen lock off.");
+        }
+        slRefresh();
+      });
+      slTimeout.addEventListener("change", () => {
+        ScreenLock.setTimeoutMin(slTimeout.value);
+        slRefresh();
+      });
+      slPwBtn.addEventListener("click", () => {
+        const st = ScreenLock.getState();
+        if (st.hasPassword) {
+          const cur = prompt("Enter your current password:");
+          if (cur === null) return;
+          if (!ScreenLock.verify(cur)) { slSay("Wrong password."); return; }
+        }
+        const pw = prompt(st.hasPassword ? "New password (min 4 characters):" : "Choose a screen-lock password (min 4 characters):");
+        if (pw === null) return;
+        const r = ScreenLock.setPassword(pw);
+        slSay(r.ok ? "Password saved — lock on." : r.error);
+        slRefresh();
+      });
+      document.getElementById("screen-lock-now").addEventListener("click", () => {
+        ScreenLock.lockNow();
+      });
+      slRefresh();
+    } catch (e) { /* screen lock unavailable — settings still work */ }
+
     document.getElementById("signout-btn").addEventListener("click", async () => {
       if (!confirm("Sign out of Micro Buddy on this device?")) return;
       await fetch("/logout");
