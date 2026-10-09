@@ -1,12 +1,15 @@
 "use strict";
 /* ============ sync.js — offline-first sync engine for Micro Buddy PWA ============
- * Strategy:
- *  - First login  -> fullSync(): downloads ALL days, every day's detail,
- *                    stats, pay and schedule into IndexedDB.
- *  - Later opens  -> incrementalSync(): re-fetches the canonical paths to
- *                    refresh anything that changed (cheap, idempotent).
- *  - Every api() call also caches its response, and falls back to cache
- *    when the network is unavailable.
+ * Strategy (2.0):
+ *  - The phone's backup blob (user_backups.data) is the single source of
+ *    truth. Every view (Home, Sales, Schedule, Stats, Badges) is computed
+ *    from it in the browser with PayEngine — exactly like the app.
+ *  - fullSync()/incrementalSync(): pull the blob + the profiles row, cache
+ *    both in IndexedDB. No more per-day MCP crawling.
+ *  - Edits go through queueWrite() (optimistic, conflict-checked, offline
+ *    queue) and are sanitized so the phone can always decode them.
+ *  - Theme: the phone's profile.themePreference wins ("Match iPhone");
+ *    otherwise the manual pick saved in this browser.
  * Sync status + "last synced" timestamp are shown in the header.
  */
 const SyncEngine = (() => {
@@ -28,19 +31,22 @@ const SyncEngine = (() => {
     refreshLastSyncLabel();
   }
 
+  const DOT = '<svg class="status-dot" viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="4" fill="currentColor"/></svg>';
+  function renderStatus(state, label) {
+    if (!statusEl) return;
+    statusEl.className = "status-pill " + state;
+    const text = label || (state === "syncing" ? "Syncing" : state === "offline" ? "Offline" : "Online");
+    statusEl.innerHTML = DOT + "<span>" + text.replace(/[<>&]/g, "") + "</span>";
+  }
+
   function updateOnlineBadge() {
     if (!statusEl) return;
-    const online = navigator.onLine;
-    statusEl.className = "pill " + (online ? "live" : "offline-pill");
-    statusEl.textContent = syncing ? "Syncing…" : (online ? "● Online" : "● Offline");
+    renderStatus(syncing ? "syncing" : (navigator.onLine ? "live" : "offline"));
   }
 
   function setSyncing(v, label) {
     syncing = v;
-    if (statusEl) {
-      statusEl.className = "pill " + (v ? "syncing-pill" : (navigator.onLine ? "live" : "offline-pill"));
-      statusEl.textContent = v ? (label || "Syncing…") : (navigator.onLine ? "● Online" : "● Offline");
-    }
+    renderStatus(v ? "syncing" : (navigator.onLine ? "live" : "offline"), v ? (label || "Syncing") : "");
   }
 
   async function refreshLastSyncLabel() {
@@ -133,100 +139,48 @@ const SyncEngine = (() => {
     } catch (e) { return null; }
   }
 
-  // ---- canonical sync paths ----
-  function canonicalPaths() {
-    const t = todayISO();
-    return [
-      { path: "/api/days?start=" + WIDE_START + "&end=" + t + "&limit=" + DAY_LIMIT, kind: "days" },
-      { path: "/api/day-summary?date=" + t, kind: "today" },
-      { path: "/api/stats?start=" + firstOfMonthISO() + "&end=" + t, kind: "stats-mtd" },
-      { path: "/api/stats?start=" + firstOfYearISO() + "&end=" + t, kind: "stats-ytd" },
-      { path: "/api/take-home?start=" + firstOfMonthISO() + "&end=" + t, kind: "pay-mtd" },
-      { path: "/api/schedule?start=" + t + "&end=" + daysAheadISO(60), kind: "schedule" },
-    ];
-  }
-
-  async function fetchAndCache(path, kind) {
-    const data = await netGet(path);
-    await MBDB.putCache(path, data, kind).catch(() => {});
-    return data;
-  }
-
-  // Fetch every day's summary + tickets. Bounded concurrency, gentle pacing.
-  async function syncDayDetails(dates, onProgress) {
-    let done = 0;
-    const queue = dates.slice();
-    async function worker() {
-      while (queue.length) {
-        const date = queue.shift();
-        try {
-          await fetchAndCache("/api/day-summary?date=" + date, "day-summary");
-          await fetchAndCache("/api/day-sales?date=" + date, "day-sales");
-        } catch (e) {
-          // Keep going — a single bad day shouldn't kill the sync.
-          console.warn("sync: day failed", date, e.message);
-        }
-        done++;
-        if (onProgress) onProgress(done, dates.length);
-        await new Promise(r => setTimeout(r, STAGGER_MS));
-      }
-    }
-    const workers = [];
-    for (let i = 0; i < Math.min(CONCURRENCY, dates.length); i++) workers.push(worker());
-    await Promise.all(workers);
+  // ---- blob sync (replaces the old per-day MCP crawl) ----
+  // Pull the latest backup blob + profile row and remember when.
+  async function pullAll() {
+    await processWriteQueue().catch(e => { if (e && e.isAuth) throw e; });
+    const res = await syncBackup();
+    try { if (typeof SB !== "undefined") await SB.getProfile({ force: true }); } catch (e) { if (e && e.isAuth) throw e; }
+    await MBDB.kvSet("lastSync", Date.now());
+    await refreshLastSyncLabel();
+    return res;
   }
 
   async function fullSync(onProgress) {
     if (syncing) return;
     if (!navigator.onLine) throw new Error("Can't do the first sync offline — connect to Wi-Fi.");
-    setSyncing(true, "Downloading all data…");
+    setSyncing(true, "Downloading");
     try {
-      const paths = canonicalPaths();
-      let step = 0;
-      for (const p of paths) {
-        step++;
-        setSyncing(true, "Syncing (" + step + "/" + paths.length + ")…");
-        if (onProgress) onProgress("fetch", step, paths.length);
-        await fetchAndCache(p.path, p.kind);
-      }
-      // Expand per-day details from the days list we just cached.
-      const daysEntry = await MBDB.getCache(paths[0].path);
-      const days = ((daysEntry && daysEntry.data && daysEntry.data.days) || [])
-        .map(d => d.date).filter(Boolean).sort();
-      setSyncing(true, "Syncing day details (0/" + days.length + ")…");
-      await syncDayDetails(days, (done, total) =>
-        setSyncing(true, "Syncing day details (" + done + "/" + total + ")…"));
-      await MBDB.kvSet("lastSync", Date.now());
+      if (onProgress) onProgress("fetch", 1, 1);
+      await pullAll();
       await MBDB.kvSet("fullSyncDone", true);
-      await refreshLastSyncLabel();
     } finally {
       setSyncing(false);
       refreshLastSyncLabel();
     }
   }
 
-  async function incrementalSync() {
-    if (syncing || !navigator.onLine) return;
+  /// Refresh from the cloud. opts.force ignores the short throttle.
+  /// Resolves to {changed} — true when the phone pushed a newer blob.
+  async function incrementalSync(opts) {
+    if (syncing || !navigator.onLine) return { changed: false };
+    const force = opts === true || (opts && opts.force);
     const last = await MBDB.kvGet("lastSync").catch(() => 0);
-    // Don't re-sync more often than every 15 minutes unless forced.
-    if (last && Date.now() - last < 15 * 60 * 1000) return;
+    if (!force && last && Date.now() - last < 60 * 1000) return { changed: false };
+    const before = await MBDB.kvGet("backupUpdatedAt").catch(() => null);
     setSyncing(true);
     try {
-      const paths = canonicalPaths();
-      for (const p of paths) {
-        try { await fetchAndCache(p.path, p.kind); }
-        catch (e) { console.warn("incremental sync: path failed", p.path, e.message); }
+      const res = await pullAll();
+      const changed = !!(res && res.updated_at && res.updated_at !== before);
+      if (changed) {
+        try { await syncThemeFromBlob(); } catch (e) {}
+        try { window.dispatchEvent(new CustomEvent("mb:data-changed")); } catch (e) {}
       }
-      // Refresh details for the most recent 14 days (covers new entries/edits).
-      const t = todayISO();
-      const recent = [];
-      for (let i = 0; i < 14; i++) {
-        const d = new Date(); d.setDate(d.getDate() - i);
-        recent.push(iso(d));
-      }
-      await syncDayDetails(recent, null);
-      await MBDB.kvSet("lastSync", Date.now());
-      await refreshLastSyncLabel();
+      return { changed };
     } finally {
       setSyncing(false);
       refreshLastSyncLabel();
@@ -238,39 +192,47 @@ const SyncEngine = (() => {
     return !done;
   }
 
-  // ---- preferences sync (theme only — AI config is server-only) ----
-  // Called right after Apple sign-in, before the data sync. The server
-  // prefers the shared iPhone theme (Supabase user_preferences) when it's
-  // reachable; otherwise it returns the dashboard's locally saved theme.
-  // The winning theme is applied immediately and cached for offline use.
+  // ---- theme ----
+  // The phone is the source of truth: profile.themePreference in the backup
+  // blob ("Match iPhone", the default). When the phone hasn't shared one
+  // (older app builds) or the user turned matching off, the manual pick
+  // saved in this browser is used. Nothing theme-related lives on the server.
+  const VALID_THEMES = ["auto", "light", "dark", "terminal", "modern", "win95"];
+
+  function normalizeTheme(v) {
+    if (v == null) return null;
+    const s = String(v).toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!s) return null;
+    if (VALID_THEMES.includes(s)) return s;
+    if (s.includes("win95") || s.includes("windows95") || s.includes("windows")) return "win95";
+    if (s.includes("terminal")) return "terminal";
+    if (s.includes("modern") || s.includes("frosted") || s.includes("glass") || s.includes("bliss")) return "modern";
+    if (s.includes("auto") || s.includes("system")) return "auto";
+    if (s.includes("light")) return "light";
+    if (s.includes("dark") || s.includes("classic")) return "dark";
+    return null;
+  }
+
+  function blobTheme(backup) {
+    const d = backup && backup.data;
+    if (!d) return null;
+    const p = d.profile || {};
+    return normalizeTheme(p.themePreference ?? p.theme ?? p.themeName ?? p.appTheme ??
+      d.themePreference ?? d.theme ?? null);
+  }
+
+  async function themeState() {
+    const mode = (await MBDB.kvGet("themeMode").catch(() => null)) || "phone";
+    const manual = normalizeTheme(await MBDB.kvGet("theme").catch(() => null)) || "auto";
+    const phone = blobTheme(await getLocalBackup().catch(() => null));
+    const effective = (mode === "phone" && phone) ? phone : manual;
+    return { mode, manual, phone, effective };
+  }
+
   async function syncPreferences() {
-    let theme = "dark";
-    if (navigator.onLine) {
-      try {
-        const res = await fetch("/api/preferences");
-        if (res.status === 401) {
-          const err = new Error("Not signed in");
-          err.isAuth = true;
-          throw err;
-        }
-        if (res.ok) {
-          const prefs = await res.json();
-          if (prefs && typeof prefs.theme === "string") theme = prefs.theme;
-          // Cache ONLY the theme. ai_config must never touch the device.
-          await MBDB.kvSet("theme", theme).catch(() => {});
-        }
-      } catch (e) {
-        if (e && e.isAuth) throw e;
-        // Offline / error: fall back to the locally cached theme.
-        const cached = await MBDB.kvGet("theme").catch(() => null);
-        if (cached) theme = cached;
-      }
-    } else {
-      const cached = await MBDB.kvGet("theme").catch(() => null);
-      if (cached) theme = cached;
-    }
-    applyTheme(theme);
-    return theme;
+    const st = await themeState();
+    applyTheme(st.effective);
+    return st.effective;
   }
 
   // ---- theme-aware app icons (robot head) ----
@@ -317,40 +279,44 @@ const SyncEngine = (() => {
     try { updateLoginLogo(applied); } catch (e) {}
     try { pushTileIcon(applied); } catch (e) {}
     // Keep the PWA chrome in sync with the theme.
+    document.documentElement.setAttribute("data-theme-pref", t);
     const meta = document.querySelector('meta[name="theme-color"]');
-    const colors = { dark: "#0d1017", light: "#f4f5f7", win95: "#008080", modern: "#1e6f9f", terminal: "#000000", auto: "#0d1017" };
+    const colors = { dark: "#0e121d", light: "#ffffff", win95: "#008080", modern: "#2a7fc0", terminal: "#000000" };
     if (meta) meta.setAttribute("content", colors[applied] || colors.dark);
+    try { window.dispatchEvent(new CustomEvent("mb:theme", { detail: { pref: t, applied } })); } catch (e) {}
     return t; // return the preference (auto stays auto), not the resolved theme
   }
 
-  // Push a theme change: apply instantly, cache locally, sync to the blob
-  // (two-way with the app) via the setThemePreference op.
+  // "auto" follows the OS live.
+  try {
+    window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+      if (document.documentElement.getAttribute("data-theme-pref") === "auto") applyTheme("auto");
+    });
+  } catch (e) {}
+
+  // Manual pick from Settings > Appearance. Stays in this browser — the
+  // phone owns the shared theme, so the blob is never written for this.
   async function setTheme(theme) {
-    const t = applyTheme(theme);
-    MBDB.kvSet("theme", t).catch(() => {});
-    try {
-      await queueWrite({ type: "setThemePreference", theme: t });
-    } catch (e) {
-      console.warn("sync: couldn't save theme to blob:", e.message);
-    }
+    const t = normalizeTheme(theme) || "auto";
+    await MBDB.kvSet("theme", t).catch(() => {});
+    await MBDB.kvSet("themeMode", "manual").catch(() => {});
+    applyTheme(t);
     return t;
   }
 
-  // Read the theme from the blob (set by the app or another dashboard).
+  /// Turn "Match iPhone" on/off; returns the theme now in effect.
+  async function setThemeMode(mode) {
+    await MBDB.kvSet("themeMode", mode === "manual" ? "manual" : "phone").catch(() => {});
+    const st = await themeState();
+    applyTheme(st.effective);
+    return st;
+  }
+
+  // Re-apply after a blob sync (the phone may have changed its theme).
   async function syncThemeFromBlob() {
     try {
-      const backup = await getLocalBackup();
-      const theme = backup && backup.data &&
-        (backup.data.themePreference || (backup.data.profile || {}).themePreference);
-      if (theme) {
-        const current = document.documentElement.getAttribute("data-theme");
-        // Only apply if different to avoid flicker.
-        const valid = ["auto", "light", "dark", "terminal", "modern", "win95"];
-        if (valid.includes(theme)) {
-          applyTheme(theme);
-          MBDB.kvSet("theme", theme).catch(() => {});
-        }
-      }
+      const st = await themeState();
+      if (st.effective !== document.documentElement.getAttribute("data-theme-pref")) applyTheme(st.effective);
     } catch (e) {
       console.warn("sync: couldn't read theme from blob:", e.message);
     }
@@ -392,8 +358,8 @@ const SyncEngine = (() => {
   return {
     bindUI, fullSync, incrementalSync, fetchCached,
     needsFullSync, refreshLastSyncLabel, setSyncing,
-    syncPreferences, applyTheme, setTheme, syncChat,
-    syncBackup, queueWrite, processWriteQueue, getLocalBackup,
+    syncPreferences, applyTheme, setTheme, setThemeMode, themeState, normalizeTheme,
+    syncChat, syncBackup, queueWrite, processWriteQueue, getLocalBackup,
     syncThemeFromBlob, applyOp,
   };
 
@@ -423,9 +389,18 @@ const SyncEngine = (() => {
     const dayId = op.dayId;
     let day = data.days.find(d => d.id === dayId);
     if (!day && (op.type === "addTicket" || op.type === "addLine" || op.type === "setDayNote" || op.type === "pasteSalesReport")) {
-      day = { id: dayId, tickets: [] };
+      // Mirror AppStore.ensureDay: hours seeded from the schedule (0 = day
+      // off), lunch by the break rules; the sanitizer fills date/note.
+      day = { id: dayId, tickets: [], note: "" };
       data.days.push(day);
       data.days.sort((a, b) => a.id < b.id ? -1 : 1);
+      try { if (typeof AppDataSanitizer !== "undefined") AppDataSanitizer.sanitize(data); } catch (e) {}
+    }
+    // A hand edit to the tickets invalidates the stored raw report (as on
+    // the phone), so a future re-parse can never resurrect changed sales.
+    if (day && ["addTicket", "addLine", "updateLine", "deleteLine", "deleteTicket", "clearDayTickets"].includes(op.type)) {
+      delete day.rawReport;
+      delete day.reportParseVersion;
     }
     // Ops that never touch a day must skip the day lookup below —
     // without a dayId the lookup finds nothing and the old early return
@@ -436,7 +411,7 @@ const SyncEngine = (() => {
       "addShiftNote", "deleteShiftNote",
       "addComparison", "updateComparison", "deleteComparison",
       "updateGoal", "addGoal", "deleteGoal",
-      "setThemePreference",
+      "setHolidayDates",
       "applyBrandCorrection", "skipBrandCorrection", "renameBrand",
     ]);
     const needsDay = !GLOBAL_OP_TYPES.has(op.type);
@@ -447,8 +422,10 @@ const SyncEngine = (() => {
 
     switch (op.type) {
       case "addTicket": {
+        const uid = (typeof AppDataSanitizer !== "undefined") ? AppDataSanitizer.uuid() : String(Date.now());
         day.tickets.push({
-          time: op.ticket.time || "",
+          id: op.ticket.id || (op.ticketId = op.ticketId || uid),
+          time: op.ticket.time || (op.ticketTime = op.ticketTime || ((typeof SB !== "undefined") ? SB.isoSeconds(new Date()) : new Date().toISOString())),
           customerNote: op.ticket.customerNote || "",
           lines: (op.ticket.lines || []).map(normalizeLine),
         });
@@ -464,7 +441,9 @@ const SyncEngine = (() => {
       case "updateLine": {
         const t = day.tickets[op.ticketIndex];
         if (!t || !Array.isArray(t.lines) || !t.lines[op.lineIndex]) return false;
+        const prevId = t.lines[op.lineIndex].id;
         t.lines[op.lineIndex] = normalizeLine(op.line);
+        if (prevId && !t.lines[op.lineIndex].id) t.lines[op.lineIndex].id = prevId;
         return true;
       }
       case "deleteLine": {
@@ -516,7 +495,7 @@ const SyncEngine = (() => {
         return true;
       }
       case "updateProfile": {
-        // Shallow-merge into data.profile (icsURL, reminders, holidayDates, lastSyncedAt, …).
+        // Shallow-merge into data.profile (icsURL, reminders, lastSyncedAt, …).
         if (!data.profile) data.profile = {};
         Object.assign(data.profile, op.updates || {});
         return true;
@@ -701,7 +680,7 @@ const SyncEngine = (() => {
         // so ensure it here.)
         let pday = data.days.find(d => d.id === op.dayId);
         if (!pday) {
-          pday = { id: op.dayId, tickets: [] };
+          pday = { id: op.dayId, tickets: [], note: "" };
           data.days.push(pday);
           data.days.sort((a, b) => a.id < b.id ? -1 : 1);
         }
@@ -716,7 +695,7 @@ const SyncEngine = (() => {
           buckets[key].push(line);
         }
         const now = new Date();
-        const isToday = op.dayId === now.toISOString().slice(0, 10);
+        const isToday = op.dayId === iso(now);
         order.forEach((key, index) => {
           const group = buckets[key];
           const note = key === "" ? "Pasted from the system" : key;
@@ -737,16 +716,18 @@ const SyncEngine = (() => {
               isReturn: !!l.isReturn, sku: l.sku || null, isExchange: !!l.isExchange,
             });
           });
+          // Same timestamps as PastedSaleApplier: today counts back a
+          // minute per customer from now; other days start at noon.
           let time;
           if (isToday) {
-            time = new Date(now.getTime() - index * 60000).toISOString();
+            time = new Date(now.getTime() - index * 60000);
           } else {
             const d = new Date(op.dayId + "T12:00:00");
-            time = new Date(d.getTime() + index * 60000).toISOString();
+            time = new Date(d.getTime() + index * 60000);
           }
           day.tickets.push({
-            id: "ticket-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
-            time, customerNote: note, lines,
+            id: AppDataSanitizer.uuid(),
+            time: SB.isoSeconds(time), customerNote: note, lines,
           });
         });
         day.rawReport = op.rawReport || "";
@@ -827,15 +808,11 @@ const SyncEngine = (() => {
         }
         return true;
       }
-      case "setThemePreference": {
-        // Two-way theme sync: stored in the blob so the app and dashboard
-        // stay on the same theme. Valid: auto, light, dark, terminal, modern, win95.
-        const valid = ["auto", "light", "dark", "terminal", "modern", "win95"];
-        const theme = valid.includes(op.theme) ? op.theme : "auto";
-        if (!data.profile) data.profile = {};
-        data.profile.themePreference = theme;
-        // Also at top level for easy access.
-        data.themePreference = theme;
+      case "setHolidayDates": {
+        // iOS keeps holiday dates on AppData (top level), not on the profile.
+        // Older dashboards wrote profile.holidayDates — drop that stray copy.
+        data.holidayDates = Array.from(new Set((op.dates || []).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)))).sort();
+        if (data.profile && "holidayDates" in data.profile) delete data.profile.holidayDates;
         return true;
       }
       default:
@@ -845,9 +822,10 @@ const SyncEngine = (() => {
 
   function normalizeLine(l) {
     return {
+      ...(l.id ? { id: l.id } : {}),
       product: String(l.product || "Item"),
       brand: l.brand || "",
-      sku: l.sku || "",
+      ...(l.sku ? { sku: String(l.sku) } : {}),
       unitPrice: Number(l.unitPrice) || 0,
       quantity: Math.max(1, parseInt(l.quantity, 10) || 1),
       kind: l.kind || "inDepartment",
@@ -938,7 +916,9 @@ const SyncEngine = (() => {
       case "addGoal":
         // Deactivates every other goal — scope is the whole list.
         return { kind: "goals", id: "all", snap: clone(data.goals) };
-      case "updateProfile": case "setThemePreference":
+      case "setHolidayDates":
+        return { kind: "holidays", id: "holidayDates", snap: clone(data.holidayDates) };
+      case "updateProfile":
       case "applyBrandCorrection": case "skipBrandCorrection": case "renameBrand":
         return { kind: "profile", id: "profile", snap: clone(data.profile) };
       default:
@@ -1040,19 +1020,4 @@ const SyncEngine = (() => {
     return { pushed: appliedIds.length, skipped };
   }
 
-  // Export the public API.
-  return {
-    bindUI,
-    fetchCached,
-    syncPreferences,
-    applyTheme,
-    setTheme,
-    syncThemeFromBlob,
-    syncChat,
-    getLocalBackup,
-    syncBackup,
-    queueWrite,
-    applyOp,
-    processWriteQueue,
-  };
 })();

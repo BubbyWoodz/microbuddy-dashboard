@@ -317,11 +317,14 @@ const StatsUI = (() => {
 
   function computeHighlights(days, table, premiumByDay) {
     const result = [];
+    // primary/secondary are formatters — call them with the day so the card
+    // shows the value (it used to print the function source).
     const add = (id, title, day, primary, secondary) => {
       if (!day) return;
+      const val = f => (typeof f === "function" ? f(day) : f);
       result.push({
         id, title, dayKey: dayKeyOf(day),
-        date: parseKey(dayKeyOf(day)), primary, secondary,
+        date: parseKey(dayKeyOf(day)), primary: val(primary), secondary: val(secondary),
       });
     };
 
@@ -608,28 +611,34 @@ const StatsUI = (() => {
   }
 
   // ---------------------------------------------------------------------------
-  // UI state + rendering
+  // UI state + rendering (desktop: one switcher, one range picker, 12-col grid)
   // ---------------------------------------------------------------------------
+
+  const TABS = [
+    { id: "stats", label: "Stats", icon: "bars" },
+    { id: "crew", label: "Crew", icon: "users" },
+    { id: "badges", label: "Badges", icon: "medal" },
+    { id: "leaderboard", label: "Leaderboard", icon: "trophy" },
+  ];
 
   const state = {
     range: "month",
-    statsTab: "stats", // "stats" | "crew"
+    statsTab: "stats", // "stats" | "crew" | "badges" | "leaderboard"
     customStart: null,
     customEnd: null,
     trendMetric: "commission", // "commission" | "revenue" | "items"
-    showCustom: false,
     data: null, // { days, shifts, profile, table, premiumByDay }
   };
 
-  // Tap-through to day detail — parent wires this.
   let onOpenDay = null;
+  let lastContainer = null;
+
+  const I = (name, opts) => (typeof Icon === "function" ? Icon(name, opts) : "");
 
   function rangeLabel() {
     if (state.range !== "custom") return RANGE_TITLES[state.range];
     if (state.customStart && state.customEnd) {
-      if (state.customStart === state.customEnd) {
-        return fmtMonthDay(parseKey(state.customStart));
-      }
+      if (state.customStart === state.customEnd) return fmtMonthDay(parseKey(state.customStart));
       return `${fmtMonthDay(parseKey(state.customStart))} – ${fmtMonthDay(parseKey(state.customEnd))}`;
     }
     return "Custom";
@@ -642,109 +651,14 @@ const StatsUI = (() => {
     const table = PayEngine.tableForProfile(profile);
     const shifts = data.shifts || [];
     const premiumByDay = PayEngine.premiumsByDay(shifts, data.holidayDates || []);
-    state.data = {
-      days: data.days || [],
-      shifts,
-      profile,
-      table,
-      premiumByDay,
-    };
+    state.data = { days: data.days || [], shifts, profile, table, premiumByDay };
   }
 
-  function spinnerHTML(msg) {
-    return `<div class="spinner">${esc(msg || "Loading stats…")}</div>`;
-  }
+  function spinnerHTML(msg) { return `<div class="spinner">${esc(msg || "Loading stats…")}</div>`; }
 
-  function emptyHTML(symbol, title, message) {
-    return `<div class="panel" style="text-align:center;padding:32px 20px">` +
-      `<div style="font-size:32px;margin-bottom:8px">${symbol}</div>` +
-      `<div style="font-weight:700;margin-bottom:4px">${esc(title)}</div>` +
-      `<div style="color:var(--muted);font-size:13px">${esc(message)}</div></div>`;
-  }
-
-  // ---- Range picker ----
-
-  function rangePickerHTML() {
-    const opts = RANGES.map(r =>
-      `<button class="btn${state.range === r ? " primary" : " ghost"}" data-range="${r}" ` +
-      `style="padding:6px 10px;font-size:13px">${RANGE_TITLES[r]}</button>`
-    ).join("");
-    return `<div class="panel" style="margin-bottom:12px">` +
-      `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">` +
-      `<div><div class="label">SHOWING</div>` +
-      `<div style="font-size:18px;font-weight:700">${esc(rangeLabel())}</div></div>` +
-      (state.range === "custom"
-        ? `<button class="btn ghost" id="stats-custom-btn" style="padding:6px 10px;font-size:13px">Change dates</button>`
-        : "") +
-      `</div>` +
-      `<div style="display:flex;gap:6px;flex-wrap:wrap">${opts}</div>` +
-      (state.showCustom ? customRangeHTML() : "") +
-      `</div>`;
-  }
-
-  function customRangeHTML() {
-    return `<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:flex-end">` +
-      `<div class="field"><label>From</label>` +
-      `<input type="date" id="stats-custom-start" value="${esc(state.customStart || "")}"></div>` +
-      `<div class="field"><label>To</label>` +
-      `<input type="date" id="stats-custom-end" value="${esc(state.customEnd || "")}"></div>` +
-      `<button class="btn primary" id="stats-custom-apply" style="padding:8px 14px">Apply</button>` +
-      `</div>`;
-  }
-
-  // ---- Stats sub-tab ----
-
-  function miniStat(label, value, color) {
-    return `<div class="card" style="padding:12px 8px;text-align:center">` +
-      `<div style="font-size:17px;font-weight:800;color:${color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${value}</div>` +
-      `<div class="label" style="margin-top:4px">${esc(label)}</div></div>`;
-  }
-
-  function totalsCardHTML(s) {
-    const neg = s.commission < -0.005;
-    let html = `<div class="panel" style="margin-bottom:12px">`;
-    // Hero
-    html += `<div style="text-align:center;padding:8px 0 16px">` +
-      `<div class="label">COMMISSION EARNED</div>` +
-      `<div style="font-size:34px;font-weight:800;color:${neg ? "var(--red)" : "var(--accent)"}">${money(s.commission)}</div>` +
-      `<div style="color:var(--muted);font-size:13px">${s.days.length} day${s.days.length === 1 ? "" : "s"} · ${s.hours.toFixed(1)} hrs worked</div>` +
-      `</div>`;
-    // Grid
-    html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">` +
-      miniStat("Money sold", compactMoney(s.revenue), "var(--text)") +
-      miniStat("Commission / hr", money(s.commissionPerHour), "var(--amber)") +
-      miniStat("Items sold", num(s.items), "var(--blue)") +
-      miniStat("Avg ticket", compactMoney(s.averageTicket), "var(--accent)") +
-      miniStat("CPH", s.hours > 0 ? s.customersPerHour.toFixed(1) : "—", "var(--amber)") +
-      miniStat("Customers", num(s.ticketCount), "var(--accent)") +
-      `</div>`;
-    // Pay rows
-    if (s.hours > 0) {
-      html += `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">`;
-      if (s.basePay > 0.005) {
-        html += payRow("Base pay", `$${PayEngine.BASE_HOURLY_RATE.toFixed(2)}/hr open hours`, money(s.basePay));
-      }
-      if (s.premiumHours > 0) {
-        html += payRow("Min-wage premium",
-          `${s.premiumHours.toFixed(1)} hrs × $${PayEngine.MINIMUM_WAGE.toFixed(2)}`,
-          money(s.premiumPay));
-      }
-      if (s.overtimePay > 0.005) {
-        html += payRow("Overtime", "CA daily ×1.5 / ×2 min wage", money(s.overtimePay));
-      }
-      html += `<div class="list-item" style="border:none;padding:10px 0 0">` +
-        `<div class="li-main" style="font-weight:700">Total pay</div>` +
-        `<div class="li-val" style="font-weight:800;font-size:16px">${money(s.totalPay)}</div></div>`;
-      html += `</div>`;
-    }
-    html += `</div>`;
-    return html;
-  }
-
-  function payRow(label, detail, value) {
-    return `<div class="list-item"><div class="li-main"><div style="font-size:13px;font-weight:600">${esc(label)}</div>` +
-      `<div class="li-sub">${esc(detail)}</div></div>` +
-      `<div class="li-val" style="color:var(--accent);font-weight:700">${value}</div></div>`;
+  function emptyHTML(icon, title, message) {
+    return `<div class="panel"><div class="empty-state"><div class="empty-ico">${I(icon, { size: 32 })}</div>` +
+      `<div class="t">${esc(title)}</div><p>${esc(message)}</p></div></div>`;
   }
 
   function compactMoney(n) {
@@ -752,11 +666,72 @@ const StatsUI = (() => {
     const abs = Math.abs(v);
     const sign = v < 0 ? "-" : "";
     if (abs >= 1000000) return `${sign}$${(abs / 1000000).toFixed(1)}M`;
-    if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(1)}K`;
+    if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(1)}k`;
     return money(v);
   }
 
-  // ---- Trends chart (pure SVG) ----
+  // ---- Header: switcher + range picker ----
+  function headHTML() {
+    const seg = `<div class="segmented" role="tablist">` + TABS.map(t =>
+      `<button data-stab="${t.id}" class="${state.statsTab === t.id ? "active" : ""}" role="tab">` +
+      `${I(t.icon, { size: 16 })}<span>${t.label}</span></button>`).join("") + `</div>`;
+    const showRange = state.statsTab === "stats" || state.statsTab === "crew";
+    let range = "";
+    if (showRange) {
+      range = `<div class="range-picker panel tight">` +
+        `<div><div class="label">Showing</div></div>` +
+        `<select id="stats-range" aria-label="Showing">` +
+        RANGES.map(r => `<option value="${r}"${state.range === r ? " selected" : ""}>${r === "custom" && state.range === "custom" ? esc(rangeLabel()) : RANGE_TITLES[r]}</option>`).join("") +
+        `</select>` +
+        (state.range === "custom"
+          ? `<input type="date" id="stats-custom-start" value="${esc(state.customStart || "")}" aria-label="From">` +
+            `<span class="muted">to</span>` +
+            `<input type="date" id="stats-custom-end" value="${esc(state.customEnd || "")}" aria-label="To">`
+          : "") +
+        `</div>`;
+    }
+    return `<div class="page-head"><div><h2>Stats</h2>` +
+      `<div class="page-sub">${state.statsTab === "badges" ? "Every badge is one day's milestone" :
+        state.statsTab === "leaderboard" ? "You and your friends, side by side" : esc(rangeLabel())}</div></div>` +
+      `<div class="spacer"></div>${seg}${range}</div>`;
+  }
+
+  // ---- Stats tab ----
+  function tile(label, value, color) {
+    return `<div class="tile"><div class="v" style="color:${color}">${value}</div><div class="l">${esc(label)}</div></div>`;
+  }
+
+  function totalsCardHTML(s) {
+    const neg = s.commission < -0.005;
+    let html = `<div class="panel col-5">` +
+      `<div class="label">Commission earned</div>` +
+      `<div class="hero-num lg ${neg ? "red" : "money"}" style="margin:4px 0 2px">${money(s.commission)}</div>` +
+      `<div class="caption">${s.days.length} day${s.days.length === 1 ? "" : "s"} · ${s.hours.toFixed(1)} hrs worked</div>` +
+      `<div class="tiles c3" style="margin-top:16px">` +
+      tile("Money sold", compactMoney(s.revenue), "var(--text-primary)") +
+      tile("Commission / hr", money(s.commissionPerHour), "var(--amber)") +
+      tile("Items sold", num(s.items), "var(--navy-bright)") +
+      tile("Avg ticket", compactMoney(s.averageTicket), "var(--money-text)") +
+      tile("CPH", s.hours > 0 ? s.customersPerHour.toFixed(1) : "—", "var(--amber)") +
+      tile("Customers", num(s.ticketCount), "var(--money-text)") +
+      `</div>`;
+    if (s.hours > 0) {
+      html += `<div style="margin-top:14px">`;
+      if (s.basePay > 0.005) html += payRow("Base pay", `$${PayEngine.BASE_HOURLY_RATE.toFixed(2)}/hr open hours`, money(s.basePay));
+      if (s.premiumHours > 0) html += payRow("Min-wage premium", `${s.premiumHours.toFixed(1)} hrs × $${PayEngine.MINIMUM_WAGE.toFixed(2)}`, money(s.premiumPay));
+      if (s.overtimePay > 0.005) html += payRow("Overtime", "CA daily ×1.5 / ×2 min wage", money(s.overtimePay));
+      html += `<div class="kv-row total"><span class="k">Total pay</span><span class="v">${money(s.totalPay)}</span></div></div>`;
+    }
+    if (s.returnsTotal > 0.005) {
+      html += `<div class="kv-row"><span class="k muted">${I("return", { size: 16 })} Returns in this range</span><span class="v red">-${money(s.returnsTotal)}</span></div>`;
+    }
+    return html + `</div>`;
+  }
+
+  function payRow(label, detail, value) {
+    return `<div class="kv-row"><span class="k">${esc(label)}</span><span class="sub">${esc(detail)}</span>` +
+      `<span class="v money">${value}</span></div>`;
+  }
 
   function trendsCardHTML(days, table) {
     const points = trendPoints(days, state.range, table, state.customStart, state.customEnd);
@@ -765,72 +740,57 @@ const StatsUI = (() => {
       { id: "revenue", label: "Money sold" },
       { id: "items", label: "Items" },
     ];
-    const metricBtns = metrics.map(m =>
-      `<button class="btn${state.trendMetric === m.id ? " primary" : " ghost"}" data-metric="${m.id}" ` +
-      `style="padding:6px 10px;font-size:13px">${m.label}</button>`
-    ).join("");
     const unit = state.range === "today" ? "sale" : (state.range === "year" || state.range === "all") ? "month" : "day";
     const metricLabel = metrics.find(m => m.id === state.trendMetric).label;
-
-    let html = `<div class="panel" style="margin-bottom:12px">` +
-      `<div class="section-title">Trends</div>` +
-      `<div style="color:var(--muted);font-size:12px;margin:-6px 0 10px">${esc(metricLabel)} per ${unit}</div>` +
-      `<div style="display:flex;gap:6px;margin-bottom:12px">${metricBtns}</div>`;
-
-    if (!points.length) {
-      html += `<div style="color:var(--muted);font-size:13px">Nothing to chart for this range yet.</div>`;
-    } else {
-      html += barChartSVG(points, state.trendMetric);
-    }
-
-    // Returns row
-    const s = state._summary;
-    if (s && s.returnsTotal > 0.005) {
-      html += `<div class="list-item" style="border:none;padding-top:12px">` +
-        `<div class="li-main" style="font-size:13px;color:var(--muted)">${ICO.undo} Returns in this range</div>` +
-        `<div class="li-val" style="color:var(--red);font-weight:700">-${money(s.returnsTotal)}</div></div>`;
-    }
-    html += `</div>`;
-    return html;
+    let html = `<div class="panel col-7"><div class="sec-head"><div class="grow">` +
+      `<div class="sec-title">Trends</div><div class="sec-sub">${esc(metricLabel)} per ${unit}</div></div>` +
+      `<div class="segmented">` + metrics.map(m =>
+        `<button data-metric="${m.id}" class="${state.trendMetric === m.id ? "active" : ""}">${m.label}</button>`).join("") +
+      `</div></div>`;
+    html += points.length
+      ? `<div class="chart-box">${barChartSVG(points, state.trendMetric)}</div>`
+      : `<div class="empty">Nothing to chart for this range yet.</div>`;
+    return html + `</div>`;
   }
 
   function barChartSVG(points, metric) {
-    const W = 340, H = 180, PAD_L = 8, PAD_R = 8, PAD_T = 8, PAD_B = 28;
+    const W = 860, H = 300, PAD_L = 52, PAD_R = 12, PAD_T = 14, PAD_B = 30;
     const vals = points.map(p => metric === "items" ? p.items : p[metric]);
     const maxV = Math.max(...vals, 0.01);
+    const minV = Math.min(...vals, 0);
+    const span = maxV - minV || 1;
     const n = points.length;
+    const plotH = H - PAD_T - PAD_B;
     const slotW = (W - PAD_L - PAD_R) / n;
-    const barW = Math.max(2, Math.min(28, slotW * 0.62));
-
-    let bars = "";
-    let labels = "";
-    // Show at most ~8 x labels.
-    const labelStep = Math.max(1, Math.ceil(n / 8));
+    const barW = Math.max(3, Math.min(42, slotW * 0.62));
+    const y0 = PAD_T + plotH * (maxV / span);
+    const fmt = v => metric === "items" ? num(Math.round(v)) : compactMoney(v);
+    let grid = "";
+    for (let g = 0; g <= 4; g++) {
+      const v = minV + span * (g / 4);
+      const y = PAD_T + plotH - plotH * (g / 4);
+      grid += `<line x1="${PAD_L}" x2="${W - PAD_R}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--hairline)" stroke-width="1"/>` +
+        `<text x="${PAD_L - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="var(--text-secondary)">${esc(fmt(v))}</text>`;
+    }
+    let bars = "", labels = "";
+    const labelStep = Math.max(1, Math.ceil(n / 14));
+    const fill = metric === "commission" ? "var(--money)" : metric === "revenue" ? "var(--accent)" : "var(--navy-bright)";
     points.forEach((p, i) => {
       const v = vals[i];
-      const h = Math.max(2, (v / maxV) * (H - PAD_T - PAD_B));
+      const h = Math.max(2, Math.abs(v) / span * plotH);
       const x = PAD_L + slotW * i + (slotW - barW) / 2;
-      const y = H - PAD_B - h;
-      const isNeg = v < 0;
-      bars += `<rect x="${x.toFixed(1)}" y="${(isNeg ? H - PAD_B - 2 : y).toFixed(1)}" ` +
-        `width="${barW.toFixed(1)}" height="${Math.abs(h).toFixed(1)}" rx="2" ` +
-        `fill="${isNeg ? "var(--red)" : "var(--accent)"}" opacity="0.85">` +
-        `<title>${esc(p.label)}: ${metric === "items" ? num(v) : money(v)}</title></rect>`;
+      const y = v >= 0 ? y0 - h : y0;
+      bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="${Math.min(4, barW / 3).toFixed(1)}" ` +
+        `fill="${v < 0 ? "var(--red)" : fill}" opacity="0.9"><title>${esc(p.label)}: ${esc(metric === "items" ? num(v) : money(v))}</title></rect>`;
       if (i % labelStep === 0) {
         const lx = PAD_L + slotW * i + slotW / 2;
-        labels += `<text x="${lx.toFixed(1)}" y="${H - 8}" text-anchor="middle" ` +
-          `font-size="9" fill="var(--muted)">${esc(shortLabel(p.label))}</text>`;
+        labels += `<text x="${lx.toFixed(1)}" y="${H - 9}" text-anchor="middle" font-size="11" fill="var(--text-secondary)">${esc(shortLabel(p.label))}</text>`;
       }
     });
-    // Max value label
-    const maxLabel = metric === "items" ? num(maxV) : compactMoney(maxV);
-    return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" role="img">` +
-      `<text x="${W - PAD_R}" y="${PAD_T + 8}" text-anchor="end" font-size="10" fill="var(--muted)">${esc(maxLabel)}</text>` +
-      bars + labels + `</svg>`;
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Trend chart">${grid}${bars}${labels}</svg>`;
   }
 
   function shortLabel(label) {
-    // "Mon 9/28" → "9/28"; "Sep" stays; "10:30 AM" → "10:30a"
     const m = String(label).match(/(\d{1,2}\/\d{1,2})/);
     if (m) return m[1];
     const tm = String(label).match(/(\d{1,2}:\d{2})\s*([AP])M/i);
@@ -838,182 +798,118 @@ const StatsUI = (() => {
     return String(label).slice(0, 6);
   }
 
-  // ---- Standout days (superlatives) ----
-
-const ICO = {
-  crown: '<svg class="ico-svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 8l3.5 3.5L12 5l5.5 6.5L21 8l-1.6 10H4.6z"/></svg>',
-  tag: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.83z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>',
-  box: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>',
-  zap: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
-  trend_down: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></svg>',
-  users: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
-  timer: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9.5V13l2.5 2.5M9.5 2h5"/></svg>',
-  sparkles: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.7 5.7 1.9-5.7 1.9L12 18.2l-1.9-5.7L4.4 10.6l5.7-1.9z"/><path d="M19 3l.7 2.1L22 6l-2.3.7L19 9l-.7-2.3L16 6l2.3-.9z"/></svg>',
-  clock: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
-  moon: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>',
-  star: '<svg class="ico-svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
-  chart: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>',
-  warn: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
-  undo: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>',
-  help: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
-  flame: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>',
-  receipt: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1z"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>'
-};
-
   const HIGHLIGHT_ICONS = {
-    best: ICO.crown, money: ICO.tag, items: ICO.box,
-    "cph-high": ICO.zap, "cph-low": ICO.trend_down, "cph-customers": ICO.users,
-    "short-money": ICO.timer, "short-comm": ICO.sparkles,
-    "long-money": ICO.clock, "long-comm": ICO.moon,
+    best: "crown", money: "tag", items: "box", "cph-high": "zap", "cph-low": "trend",
+    "cph-customers": "users", "short-money": "hourglass", "short-comm": "sparkles",
+    "long-money": "clock", "long-comm": "moon",
   };
 
   function highlightsHTML(s) {
     if (state.range === "today" || !s.highlights.length) return "";
-    let html = `<div class="panel" style="margin-bottom:12px">` +
-      `<div class="section-title">Standout days</div>` +
-      `<div style="color:var(--muted);font-size:12px;margin:-6px 0 10px">The days worth remembering</div>` +
-      `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">`;
+    let html = `<div class="panel col-12"><div class="sec-head"><div class="grow"><div class="sec-title">Standout days</div>` +
+      `<div class="sec-sub">The days worth remembering</div></div></div><div class="tiles" style="grid-template-columns:repeat(auto-fill,minmax(190px,1fr))">`;
     for (const h of s.highlights) {
-      html += `<button class="card stats-highlight" data-day="${esc(h.dayKey)}" ` +
-        `style="padding:12px;text-align:left;cursor:pointer">` +
-        `<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">` +
-        `${HIGHLIGHT_ICONS[h.id] || ICO.star} ${esc(h.title)}</div>` +
-        `<div style="font-size:16px;font-weight:800;margin:4px 0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(h.primary)}</div>` +
-        `<div style="font-size:11px;color:var(--muted)">${esc(h.secondary)}</div>` +
-        `</button>`;
+      const tint = h.id === "cph-low" || h.id.startsWith("long") ? "var(--text-secondary)" : "var(--amber)";
+      html += `<button class="tile left stats-highlight" data-day="${esc(h.dayKey)}" style="cursor:pointer;color:inherit;font:inherit">` +
+        `<div class="t" style="color:${tint}">${I(HIGHLIGHT_ICONS[h.id] || "star", { size: 14 })}${esc(h.title)}</div>` +
+        `<div class="big">${esc(h.primary)}</div><div class="c">${esc(h.secondary)}</div></button>`;
     }
-    // Day-off earnings tiles.
     if (s.offDayCount > 0) {
-      html += `<div class="card" style="padding:12px">` +
-        `<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">${ICO.moon} Sold on days off</div>` +
-        `<div style="font-size:16px;font-weight:800;margin:4px 0 2px">${money(s.offDayRevenue)}</div>` +
-        `<div style="font-size:11px;color:var(--muted)">across ${s.offDayCount} day${s.offDayCount === 1 ? "" : "s"} off</div></div>`;
+      html += `<div class="tile left"><div class="t">${I("moon", { size: 14 })}Sold on days off</div>` +
+        `<div class="big">${money(s.offDayRevenue)}</div><div class="c">across ${s.offDayCount} day${s.offDayCount === 1 ? "" : "s"} off</div></div>`;
       if (s.offDayReturns > 0.005) {
-        html += `<div class="card" style="padding:12px">` +
-          `<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">${ICO.undo} Returned on days off</div>` +
-          `<div style="font-size:16px;font-weight:800;margin:4px 0 2px;color:var(--red)">-${money(s.offDayReturns)}</div>` +
-          `<div style="font-size:11px;color:var(--muted)">across ${s.offDayCount} day${s.offDayCount === 1 ? "" : "s"} off</div></div>`;
+        html += `<div class="tile left"><div class="t">${I("return", { size: 14 })}Returned on days off</div>` +
+          `<div class="big red">-${money(s.offDayReturns)}</div><div class="c">across ${s.offDayCount} day${s.offDayCount === 1 ? "" : "s"} off</div></div>`;
       }
     }
-    html += `</div></div>`;
-    return html;
+    return html + `</div></div>`;
   }
-
-  // ---- Biggest tickets ----
 
   function biggestTicketsHTML(s) {
-    const bm = s.biggestTicketByMoney;
-    const bi = s.biggestTicketByItems;
-    if (!bm && !bi) return "";
-    const tile = (title, icon, value, caption, dayKey, color) =>
-      dayKey
-        ? `<button class="card stats-highlight" data-day="${esc(dayKey)}" style="padding:14px;text-align:left;cursor:pointer">` +
-          `<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">${icon} ${esc(title)}</div>` +
-          `<div style="font-size:20px;font-weight:800;margin:4px 0 2px;color:${color}">${esc(value)}</div>` +
-          `<div style="font-size:11px;color:var(--muted)">${esc(caption)}</div></button>`
-        : "";
-    let html = `<div class="panel" style="margin-bottom:12px">` +
-      `<div class="section-title">Biggest sales</div>` +
-      `<div style="color:var(--muted);font-size:12px;margin:-6px 0 10px">Single tickets that carried you</div>` +
-      `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">`;
-    if (bm) {
-      html += tile("Biggest sale (money)", ICO.tag,
-        compactMoney(ticketRevenue(bm.ticket)),
-        `${fmtDayOnly(parseKey(dayKeyOf(bm.day)))} · ${ticketItemCount(bm.ticket)} items`,
-        dayKeyOf(bm.day), "var(--accent)");
-    }
-    if (bi) {
-      html += tile("Most items in one sale", ICO.box,
-        num(ticketItemCount(bi.ticket)),
-        `${fmtDayOnly(parseKey(dayKeyOf(bi.day)))} · ${compactMoney(ticketRevenue(bi.ticket))}`,
-        dayKeyOf(bi.day), "var(--accent)");
-    }
-    html += `</div></div>`;
-    return html;
+    const bm = s.biggestTicketByMoney, bi = s.biggestTicketByItems;
+    let html = `<div class="panel col-4"><div class="sec-head"><div class="grow"><div class="sec-title">Biggest sales</div>` +
+      `<div class="sec-sub">Single tickets that carried you</div></div></div><div class="tiles c2">`;
+    const t = (title, icon, value, caption, dayKey) =>
+      `<button class="tile left stats-highlight" data-day="${esc(dayKey)}" style="cursor:pointer;color:inherit;font:inherit">` +
+      `<div class="t">${I(icon, { size: 14 })}${esc(title)}</div><div class="big money" style="font-size:22px">${esc(value)}</div>` +
+      `<div class="c">${esc(caption)}</div></button>`;
+    if (bm) html += t("Biggest sale (money)", "tag", compactMoney(ticketRevenue(bm.ticket)),
+      `${fmtDayOnly(parseKey(dayKeyOf(bm.day)))} · ${ticketItemCount(bm.ticket)} items`, dayKeyOf(bm.day));
+    if (bi) html += t("Most items in one sale", "box", num(ticketItemCount(bi.ticket)),
+      `${fmtDayOnly(parseKey(dayKeyOf(bi.day)))} · ${compactMoney(ticketRevenue(bi.ticket))}`, dayKeyOf(bi.day));
+    if (!bm && !bi) html += `<div class="empty">No tickets in this range.</div>`;
+    return html + `</div></div>`;
   }
 
-  // ---- Rankings ----
-
-  function rankingHTML(title, subtitle, items, accentFirst) {
-    let html = `<div class="panel" style="margin-bottom:12px">` +
-      `<div class="section-title">${esc(title)}</div>` +
-      `<div style="color:var(--muted);font-size:12px;margin:-6px 0 10px">${esc(subtitle)}</div>`;
-    if (!items.length) {
-      html += `<div style="color:var(--muted);font-size:13px;padding:8px 0">Nothing yet — log some sales to build this list.</div>`;
-    } else {
-      const peak = Math.max(...items.map(i => i.count), 1);
-      items.forEach((item, idx) => {
-        const frac = peak > 0 ? item.count / peak : 0;
-        const tint = idx < 3 ? "var(--accent)" : "var(--blue)";
-        html += `<div class="list-item" style="align-items:center">` +
-          `<span class="rank${idx < 3 ? " r" + (idx + 1) : ""}">${idx + 1}</span>` +
-          `<div class="li-main" style="min-width:0"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(item.name)}</div>` +
-          `<div class="li-sub">${num(item.count)} sold · ${compactMoney(item.value)}</div>` +
-          `<div style="height:4px;border-radius:2px;background:var(--card2);margin-top:6px">` +
-          `<div style="height:100%;width:${(frac * 100).toFixed(1)}%;border-radius:2px;background:${tint}"></div></div></div>` +
-          `<div class="li-val" style="font-size:13px">${compactMoney(item.value)}</div></div>`;
-      });
-    }
-    html += `</div>`;
-    return html;
+  function rankingHTML(title, subtitle, items) {
+    let html = `<div class="panel col-4"><div class="sec-head"><div class="grow"><div class="sec-title">${esc(title)}</div>` +
+      `<div class="sec-sub">${esc(subtitle)}</div></div></div>`;
+    if (!items.length) return html + `<div class="empty">Nothing yet — log some sales to build this list.</div></div>`;
+    const peak = Math.max(...items.map(i => i.count), 1);
+    html += `<div class="rank-list">`;
+    items.forEach((item, idx) => {
+      const frac = peak > 0 ? Math.max(0.02, item.count / peak) : 0;
+      html += `<div class="rank"><span class="n${idx < 3 ? " top" : ""}">${idx + 1}</span>` +
+        `<span class="name" title="${esc(item.name)}">${esc(item.name)}</span>` +
+        `<span class="val">${num(item.count)} <span class="muted" style="font-weight:600">· ${compactMoney(item.value)}</span></span>` +
+        `<div class="bar"><i style="width:${(frac * 100).toFixed(1)}%;${idx < 3 ? "" : "background:var(--navy-bright);opacity:.7"}"></i></div></div>`;
+    });
+    return html + `</div></div>`;
   }
 
-  // ---- Crew sub-tab ----
+  function statsTabHTML() {
+    const { days, table, premiumByDay } = state.data;
+    const filtered = filterByRange(days, state.range, state.customStart, state.customEnd);
+    const s = computeSummary(filtered, table, premiumByDay, state.range);
+    state._summary = s;
+    if (!filtered.length) {
+      const msg = state.range === "custom" ? "Nothing logged in that range" : `Nothing logged for ${RANGE_TITLES[state.range].toLowerCase()}`;
+      return emptyHTML("chart", msg, "Log some sales and this page fills up with your numbers.");
+    }
+    return `<div class="grid">` +
+      totalsCardHTML(s) + trendsCardHTML(days, table) + highlightsHTML(s) +
+      biggestTicketsHTML(s) +
+      rankingHTML("Top 10 brands", "By units sold", s.topBrands) +
+      rankingHTML("Top 10 products", "Your bread and butter", s.topProducts) +
+      `</div>`;
+  }
 
+  // ---- Crew tab ----
   function crewTabHTML() {
     const { shifts, days, table } = state.data;
     const list = crewStats(shifts, days, table, state.range, state.customStart, state.customEnd);
     const partners = list.filter(s => s.partnerShifts > 0);
-    const brief = list
-      .filter(s => s.partnerShifts === 0 && s.briefShifts > 0)
-      .sort((a, b) => a.briefShifts === b.briefShifts
-        ? b.briefOverlapHours - a.briefOverlapHours
-        : b.briefShifts - a.briefShifts);
-
+    const brief = list.filter(s => s.partnerShifts === 0 && s.briefShifts > 0)
+      .sort((a, b) => a.briefShifts === b.briefShifts ? b.briefOverlapHours - a.briefOverlapHours : b.briefShifts - a.briefShifts);
     if (!partners.length && !brief.length) {
-      return emptyHTML(ICO.users,
-        `No crew logged for ${RANGE_TITLES[state.range].toLowerCase()}`,
-        "Add who's working to a shift and this page fills up.");
+      return emptyHTML("users", `No crew logged for ${rangeLabel().toLowerCase()}`, "Add who's working to a shift and this page fills up.");
     }
-
-    let html = "";
-    // Superlative cards: most time with / least often.
+    let html = `<div class="grid">`;
     if (partners.length) {
-      const most = partners[0];
-      const least = partners[partners.length - 1];
-      html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">` +
-        crewSuperCard("MOST TIME WITH", ICO.crown, "var(--amber)", most) +
-        crewSuperCard("LEAST OFTEN", ICO.help, "var(--blue)", least) +
-        `</div>`;
-
-      html += `<div class="panel" style="margin-bottom:12px">` +
-        `<div class="section-title">Everyone</div>` +
-        `<div style="color:var(--muted);font-size:12px;margin:-6px 0 10px">${partners.length} ${partners.length === 1 ? "person" : "people"} worked with, ranked by shifts together</div>`;
-      partners.forEach((s, i) => { html += crewRowHTML(s, i + 1); });
-      html += `</div>`;
+      const most = partners[0], least = partners[partners.length - 1];
+      html += crewSuperCard("Most time with", "crown", "var(--amber)", most) +
+        crewSuperCard("Least often", "users", "var(--navy-bright)", least) +
+        `<div class="panel col-4"><div class="label">Crew size</div><div class="hero-num md">${partners.length}</div>` +
+        `<div class="caption">${partners.length === 1 ? "person" : "people"} worked with · ${rangeLabel()}</div></div>`;
+      html += `<div class="panel col-8"><div class="sec-head"><div class="grow"><div class="sec-title">Everyone</div>` +
+        `<div class="sec-sub">${partners.length} ${partners.length === 1 ? "person" : "people"} worked with, ranked by shifts together</div></div></div>` +
+        `<div class="list">` + partners.map((s, i) => crewRowHTML(s, i + 1)).join("") + `</div></div>`;
     }
-    if (brief.length) {
-      html += `<div class="panel" style="margin-bottom:12px;opacity:0.9">` +
-        `<div class="section-title">Brief overlaps</div>` +
-        `<div style="color:var(--muted);font-size:12px;margin:-6px 0 10px">On the roster but under half your shift — not counted above</div>`;
-      for (const s of brief) {
-        html += `<div class="list-item"><div style="display:flex;align-items:center;gap:12px;min-width:0">` +
-          `<span style="width:34px;height:34px;border-radius:50%;background:var(--card2);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:var(--muted);flex-shrink:0">${esc(initials(s.name))}</span>` +
-          `<div class="li-main"><div style="font-weight:600">${esc(s.name)}</div>` +
-          `<div class="li-sub">${hoursText(s.briefOverlapHours)} total overlap</div></div></div>` +
-          `<div class="li-val"><div style="font-weight:800">${s.briefShifts}</div>` +
-          `<div class="li-sub">${s.briefShifts === 1 ? "shift" : "shifts"}</div></div></div>`;
-      }
-      html += `</div>`;
+    html += `<div class="panel ${partners.length ? "col-4" : "col-12"}"><div class="sec-head"><div class="grow"><div class="sec-title">Brief overlaps</div>` +
+      `<div class="sec-sub">On the roster but under half your shift — not counted in Everyone</div></div></div>`;
+    if (!brief.length) html += `<div class="empty">No brief overlaps.</div>`;
+    for (const s of brief) {
+      html += `<div class="list-item"><span class="avatar placeholder" style="width:34px;height:34px;font-size:12px;font-weight:800">${esc(initials(s.name))}</span>` +
+        `<div class="li-main">${esc(s.name)}<div class="li-sub">${hoursText(s.briefOverlapHours)} total overlap</div></div>` +
+        `<div class="li-val">${s.briefShifts}<div class="li-sub">${s.briefShifts === 1 ? "shift" : "shifts"}</div></div></div>`;
     }
-    return html;
+    return html + `</div></div>`;
   }
 
   function crewSuperCard(title, icon, tint, stat) {
-    return `<div class="card" style="padding:14px">` +
-      `<div style="font-size:10px;font-weight:700;color:${tint};text-transform:uppercase">${icon} ${esc(title)}</div>` +
-      `<div style="font-size:17px;font-weight:800;margin:6px 0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(stat.name)}</div>` +
-      `<div style="font-size:12px;color:var(--muted);font-weight:600">${stat.partnerShifts} shift${stat.partnerShifts === 1 ? "" : "s"} · ${hoursText(stat.overlapHours)}</div></div>`;
+    return `<div class="panel col-4"><div class="label" style="color:${tint}">${I(icon, { size: 14 })} ${esc(title)}</div>` +
+      `<div class="hero-num md" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(stat.name)}</div>` +
+      `<div class="caption">${stat.partnerShifts} shift${stat.partnerShifts === 1 ? "" : "s"} · ${hoursText(stat.overlapHours)}</div></div>`;
   }
 
   function crewRowHTML(stat, rank) {
@@ -1023,152 +919,93 @@ const ICO = {
     if (stat.closingShifts > 0) parts.push(`closed together ${stat.closingShifts}×`);
     if (stat.loggedDaysCount > 0) parts.push(`avg ${money(stat.avgRevenue)} sold`);
     const detail = parts.length ? parts.join(" · ") : "hours not recorded yet";
-    return `<div class="list-item"><div style="display:flex;align-items:center;gap:12px;min-width:0">` +
-      `<span style="width:18px;font-size:12px;font-weight:800;color:var(--muted)">${rank}</span>` +
-      `<span style="width:34px;height:34px;border-radius:50%;background:var(--card2);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:var(--blue);flex-shrink:0">${esc(initials(stat.name))}</span>` +
-      `<div class="li-main"><div style="font-weight:700">${esc(stat.name)}</div>` +
-      `<div class="li-sub">${esc(detail)}</div></div></div>` +
-      `<div class="li-val"><div style="font-weight:800;font-size:16px">${stat.partnerShifts}</div>` +
-      `<div class="li-sub">${stat.partnerShifts === 1 ? "shift" : "shifts"}</div></div></div>`;
+    return `<div class="list-item"><span class="muted" style="width:20px;text-align:right;font-weight:800;font-size:12px">${rank}</span>` +
+      `<span class="avatar initials" style="width:36px;height:36px;font-size:13px">${esc(initials(stat.name))}</span>` +
+      `<div class="li-main">${esc(stat.name)}<div class="li-sub">${esc(detail)}</div></div>` +
+      `<div class="li-val" style="font-size:17px">${stat.partnerShifts}<div class="li-sub">${stat.partnerShifts === 1 ? "shift" : "shifts"}</div></div></div>`;
   }
 
-  // ---- Stats sub-tab assembly ----
-
-  function statsTabHTML() {
-    const { days, table, premiumByDay } = state.data;
-    const filtered = filterByRange(days, state.range, state.customStart, state.customEnd);
-    const s = computeSummary(filtered, table, premiumByDay, state.range);
-    state._summary = s;
-
-    if (!filtered.length) {
-      const msg = state.range === "custom"
-        ? "Nothing logged in that range"
-        : `Nothing logged for ${RANGE_TITLES[state.range].toLowerCase()}`;
-      return emptyHTML(ICO.chart, msg, "Log some sales and this page fills up with your numbers.");
-    }
-
-    return totalsCardHTML(s) +
-      trendsCardHTML(days, table) +
-      highlightsHTML(s) +
-      biggestTicketsHTML(s) +
-      rankingHTML("Top 10 brands", "By units sold", s.topBrands) +
-      rankingHTML("Top 10 products", "Your bread and butter", s.topProducts);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Main render + events
-  // ---------------------------------------------------------------------------
-
-  function subTabsHTML() {
-    const tabs = [
-      { id: "stats", label: "Stats" },
-      { id: "crew", label: "Crew" },
-    ];
-    return `<div style="display:flex;gap:6px;margin-bottom:12px">` +
-      tabs.map(t =>
-        `<button class="btn${state.statsTab === t.id ? " primary" : " ghost"}" data-stab="${t.id}" ` +
-        `style="flex:1;padding:8px;font-size:14px;font-weight:700">${t.label}</button>`
-      ).join("") + `</div>`;
-  }
-
+  // ---- Main render + events ----
   async function render(container) {
     if (!container) return;
+    lastContainer = container;
     container.innerHTML = spinnerHTML("Loading stats…");
-    try {
-      await loadData();
-    } catch (e) {
-      container.innerHTML = emptyHTML(ICO.warn, "Couldn't load stats",
-        (e && e.message) || "Check your connection and try again.");
+    try { await loadData(); }
+    catch (e) {
+      container.innerHTML = emptyHTML("alert", "Couldn't load stats", (e && e.message) || "Check your connection and try again.");
       return;
     }
     paint(container);
   }
 
   function paint(container) {
-    let html = subTabsHTML() + rangePickerHTML();
-    html += state.statsTab === "crew" ? crewTabHTML() : statsTabHTML();
-    container.innerHTML = html;
+    let body;
+    if (state.statsTab === "crew") body = crewTabHTML();
+    else if (state.statsTab === "badges") body = `<div id="badges-host"></div>`;
+    else if (state.statsTab === "leaderboard") body = `<div id="leaderboard-body">${spinnerHTML("Loading leaderboard…")}</div>`;
+    else body = statsTabHTML();
+    container.innerHTML = headHTML() + body;
+    if (state.statsTab === "badges" && typeof BadgesUI !== "undefined") {
+      BadgesUI.render(container.querySelector("#badges-host"), state.data, { onOpenDay });
+    }
+    if (state.statsTab === "leaderboard" && typeof LeaderboardUI !== "undefined") {
+      try { LeaderboardUI.open(container.querySelector("#leaderboard-body")); }
+      catch (e) { container.querySelector("#leaderboard-body").innerHTML = emptyHTML("alert", "Couldn't load the leaderboard", e.message || ""); }
+    }
     bind(container);
   }
 
   function bind(container) {
-    // Sub-tabs.
     container.querySelectorAll("[data-stab]").forEach(btn => {
-      btn.addEventListener("click", () => {
-        state.statsTab = btn.dataset.stab;
-        paint(container);
-      });
+      btn.addEventListener("click", () => { state.statsTab = btn.dataset.stab; paint(container); });
     });
-    // Range presets.
-    container.querySelectorAll("[data-range]").forEach(btn => {
-      btn.addEventListener("click", () => {
-        const r = btn.dataset.range;
-        if (r === "custom") {
-          state.showCustom = true;
-          // Default the draft to this month → today.
-          const now = new Date();
-          const first = new Date(now.getFullYear(), now.getMonth(), 1);
-          if (!state.customStart) state.customStart = toKey(first);
-          if (!state.customEnd) state.customEnd = toKey(now);
-        } else {
-          state.showCustom = false;
-        }
-        state.range = r;
-        paint(container);
-      });
+    const sel = container.querySelector("#stats-range");
+    if (sel) sel.addEventListener("change", () => {
+      state.range = sel.value;
+      if (state.range === "custom") {
+        const now = new Date();
+        if (!state.customStart) state.customStart = toKey(new Date(now.getFullYear(), now.getMonth(), 1));
+        if (!state.customEnd) state.customEnd = toKey(now);
+      }
+      paint(container);
     });
-    // Custom range controls.
-    const customBtn = container.querySelector("#stats-custom-btn");
-    if (customBtn) {
-      customBtn.addEventListener("click", () => {
-        state.showCustom = !state.showCustom;
-        paint(container);
-      });
-    }
-    const applyBtn = container.querySelector("#stats-custom-apply");
-    if (applyBtn) {
-      applyBtn.addEventListener("click", () => {
-        const s = container.querySelector("#stats-custom-start");
-        const e = container.querySelector("#stats-custom-end");
-        if (s && s.value) state.customStart = s.value;
-        if (e && e.value) state.customEnd = e.value;
-        // Guard: start <= end.
+    ["#stats-custom-start", "#stats-custom-end"].forEach(id => {
+      const el = container.querySelector(id);
+      if (!el) return;
+      el.addEventListener("change", () => {
+        const s = container.querySelector("#stats-custom-start"), e = container.querySelector("#stats-custom-end");
+        if (s.value) state.customStart = s.value;
+        if (e.value) state.customEnd = e.value;
         if (state.customStart && state.customEnd && state.customStart > state.customEnd) {
-          const t = state.customStart;
-          state.customStart = state.customEnd;
-          state.customEnd = t;
+          const t = state.customStart; state.customStart = state.customEnd; state.customEnd = t;
         }
-        state.range = "custom";
-        state.showCustom = false;
-        paint(container);
-      });
-    }
-    // Trend metric switcher.
-    container.querySelectorAll("[data-metric]").forEach(btn => {
-      btn.addEventListener("click", () => {
-        state.trendMetric = btn.dataset.metric;
         paint(container);
       });
     });
-    // Tap-through to day detail (highlights + biggest tickets).
+    container.querySelectorAll("[data-metric]").forEach(btn => {
+      btn.addEventListener("click", () => { state.trendMetric = btn.dataset.metric; paint(container); });
+    });
     container.querySelectorAll(".stats-highlight[data-day]").forEach(el => {
-      el.addEventListener("click", () => {
-        if (typeof onOpenDay === "function") onOpenDay(el.dataset.day);
-      });
+      el.addEventListener("click", () => { if (typeof onOpenDay === "function") onOpenDay(el.dataset.day); });
     });
   }
 
-  // Public API.
+  async function refresh() { if (lastContainer) await render(lastContainer); }
+  function setTab(tab) { state.statsTab = tab; if (lastContainer && state.data) paint(lastContainer); }
+
   return {
-    render,
-    // Parent wiring: StatsUI.onOpenDay = (dayKey) => openDayDetail(dayKey);
+    render, refresh, setTab,
     set onOpenDay(fn) { onOpenDay = fn; },
     get onOpenDay() { return onOpenDay; },
-    // Exposed for testing / reuse.
     _computeSummary: computeSummary,
     _filterByRange: filterByRange,
     _crewStats: crewStats,
     _trendPoints: trendPoints,
     _state: state,
+    _compactMoney: compactMoney,
+    _dayRevenue: dayRevenue,
+    _dayCustomerCount: dayCustomerCount,
+    _dayItemsSold: dayItemsSold,
+    _dayKeyOf: dayKeyOf,
   };
 })();

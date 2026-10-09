@@ -74,7 +74,7 @@
  *             String(l.product || "").trim().toLowerCase());
  *         brand: (l.brand && l.brand.trim()) ? l.brand : (corr ? corr.brand : "")
  *
- *   ⚠ ROUTING: all three new ops are GLOBAL (no dayId). sync.js applyOp
+ *   NOTE ROUTING: all three new ops are GLOBAL (no dayId). sync.js applyOp
  *   currently does `if (!day) return false;` BEFORE the switch — global ops
  *   (setThemePreference, updateProfile, these) need that early return fixed
  *   or they will silently fail. Fix the router, then add the cases.
@@ -418,12 +418,12 @@
         ${this._tab === "unidentified" && unidentified.length ? `
         <div class="br-toolbar">
           <button class="br-btn" data-bract="export">⤴ Export list</button>
-          <button class="br-btn" data-bract="analyze">✨ Analyze</button>
+          <button class="br-btn" data-bract="analyze">${Icon("wand", { size: 14 })} Analyze</button>
         </div>` : ""}
         ${this._tab === "corrected" && corrected.length ? `
         <div class="br-toolbar">
-          <button class="br-btn" data-bract="${this._editingCorrected ? "cancelEdit" : "editCorrected"}">${this._editingCorrected ? "✕ Discard" : "⋯ Edit brands"}</button>
-          ${this._editingCorrected ? `<button class="br-btn primary" data-bract="saveEdits">✓ Save</button>` : ""}
+          <button class="br-btn" data-bract="${this._editingCorrected ? "cancelEdit" : "editCorrected"}">${this._editingCorrected ? Icon("close", { size: 14 }) + " Discard" : Icon("edit", { size: 14 }) + " Edit brands"}</button>
+          ${this._editingCorrected ? `<button class="br-btn primary" data-bract="saveEdits">${Icon("check", { size: 14 })} Save</button>` : ""}
         </div>` : ""}
         <div class="br-list">${body}</div>
         <div class="br-modal-root"></div>`;
@@ -440,7 +440,7 @@
         b.addEventListener("click", () => {
           const sku = b.dataset.brsku;
           (navigator.clipboard ? navigator.clipboard.writeText(sku) : Promise.reject())
-            .then(() => { b.textContent = "Copied ✓"; setTimeout(() => this.render(), 1200); })
+            .then(() => { b.textContent = "Copied"; setTimeout(() => this.render(), 1200); })
             .catch(() => prompt("Copy SKU:", sku));
         }));
     },
@@ -454,7 +454,7 @@
     },
 
     _unidentifiedHTML(list) {
-      if (!list.length) return `<div class="br-empty"><div class="big">✅</div>
+      if (!list.length) return `<div class="br-empty"><div class="big" style="color:var(--money)">${Icon("check-circle", { size: 34 })}</div>
         <b>Everything's labeled</b><br>Every product you've sold or returned has a brand.
         New unlabeled ones will show up here as you log sales.</div>`;
       return list.map(p => `
@@ -464,8 +464,8 @@
             <span class="br-pill">Brand unknown</span></div>
           <div class="br-meta">${esc(this._statsLine(p))}</div>
           <div class="br-row">
-            <button class="br-btn" data-brskip="${esc(p.key)}">← Don't know</button>
-            <button class="br-btn primary" data-bridentify="${esc(p.key)}">Know it →</button>
+            <button class="br-btn" data-brskip="${esc(p.key)}">Don't know</button>
+            <button class="br-btn primary" data-bridentify="${esc(p.key)}">Know it</button>
           </div>
         </div>`).join("") +
         `<div class="br-note">${list.length} product${list.length === 1 ? "" : "s"} without a brand ·
@@ -473,7 +473,7 @@
     },
 
     _uncorrectedHTML(list) {
-      if (!list.length) return `<div class="br-empty"><div class="big">📥</div>
+      if (!list.length) return `<div class="br-empty"><div class="big" style="color:var(--accent)">${Icon("download", { size: 34 })}</div>
         <b>Nothing waiting</b><br>Products you mark "don't know" land here until you name their brand.</div>`;
       return list.map(p => `
         <div class="br-card"><div class="br-review-row">
@@ -484,7 +484,7 @@
     },
 
     _correctedHTML(list) {
-      if (!list.length) return `<div class="br-empty"><div class="big">🏷️</div>
+      if (!list.length) return `<div class="br-empty"><div class="big" style="color:var(--accent)">${Icon("tag", { size: 34 })}</div>
         <b>No corrections yet</b><br>Name a brand for an unidentified product and it'll be remembered here.</div>`;
       return list.map(c => `
         <div class="br-card"><div class="br-review-row">
@@ -525,7 +525,7 @@
             <input class="br-field" id="br-brand-input" placeholder="Brand name" autocapitalize="words" autocomplete="off" autocorrect="off">
             <div class="br-row">
               <button class="br-btn" data-brcancel>Cancel</button>
-              <button class="br-btn primary" data-brsave>✓ Save brand</button>
+              <button class="br-btn primary" data-brsave>${Icon("check", { size: 14 })} Save brand</button>
             </div>
             <div class="br-note">Every unlabeled line of this product gets the brand — in your history, memory, and stats.</div>
           </div>
@@ -597,7 +597,7 @@
             <textarea class="br-field" id="br-analyze-text" placeholder="Paste the brand list here…"></textarea>
             <div class="br-row">
               <button class="br-btn" data-brcancel>Close</button>
-              <button class="br-btn primary" data-brrun>✨ Analyze</button>
+              <button class="br-btn primary" data-brrun>${Icon("wand", { size: 14 })} Analyze</button>
             </div>
             <div class="br-note" id="br-analyze-msg"></div>
           </div>
@@ -639,7 +639,7 @@
             ${st.unmatched > 0 ? `<div class="br-note">${st.unmatched} unidentified product${st.unmatched === 1 ? " isn't" : "s aren't"} in this list — they'll stay unidentified.</div>` : ""}
             <div class="br-row" style="margin-top:12px">
               <button class="br-btn" data-brcancel>Back</button>
-              <button class="br-btn primary" data-brconfirm>✓ Save ${st.matches.length} correction${st.matches.length === 1 ? "" : "s"}</button>
+              <button class="br-btn primary" data-brconfirm>${Icon("check", { size: 14 })} Save ${st.matches.length} correction${st.matches.length === 1 ? "" : "s"}</button>
             </div>
             <div class="br-note">Saving gives every product its brand — in your history, memory, and stats.</div>
           </div>

@@ -154,9 +154,9 @@ const CoworkersUI = (() => {
     return out;
   }
 
-  function uid() {
-    return "id-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
-  }
+  // The phone decodes these ids as Swift UUIDs — anything else breaks its
+  // restore, so always mint real (uppercase) UUIDs.
+  function uid() { return AppDataSanitizer.uuid(); }
 
   // ---------------------------------------------------------------------------
   // Data access
@@ -250,8 +250,8 @@ const CoworkersUI = (() => {
 
       let html = '<div class="cw-toolbar">' +
         '<input type="search" id="cw-search" placeholder="Search coworkers…" autocomplete="off" value="' + esc(boxEl.dataset.query || "") + '">' +
-        '<button class="btn primary" id="cw-add">＋ Add</button>' +
-        '<button class="btn" id="cw-compare">⚖️ Compare</button>' +
+        '<button class="btn primary" id="cw-add">' + Icon("user-plus", { size: 14 }) + ' Add</button>' +
+        '<button class="btn" id="cw-compare">' + Icon("swap", { size: 14 }) + ' Compare</button>' +
         "</div>";
 
       if (!list.length) {
@@ -260,7 +260,7 @@ const CoworkersUI = (() => {
           "</div>";
       } else {
         if (favorites.length && !q) {
-          html += '<div class="section-title">★ Favorites</div><div class="coworker-grid">';
+          html += '<div class="section-title">' + Icon("star", { size: 13 }) + ' Favorites</div><div class="coworker-grid">';
           favorites.forEach(c => { html += cardHTML(c, lastSeen[String(c.id)]); });
           html += "</div>";
         }
@@ -327,7 +327,7 @@ const CoworkersUI = (() => {
       avatarHTML(c, 44) +
       '<div class="c-info"><strong>' + esc(preferredName(c)) + "</strong>" +
       (sub ? '<span class="c-role">' + esc(sub) + "</span>" : "") +
-      (c.linkedUserID ? '<span class="c-linked" title="Linked to their Micro Buddy account">🔗</span>' : "") +
+      (c.linkedUserID ? '<span class="c-linked" title="Linked to their Micro Buddy account">' + Icon("link", { size: 13 }) + '</span>' : "") +
       "</div></div>";
   }
 
@@ -370,7 +370,7 @@ const CoworkersUI = (() => {
       }
       const wl = workLine(c);
       let html = '<div class="cw-detail-nav">' +
-        '<button class="btn ghost" id="cw-back">‹ All coworkers</button>' +
+        '<button class="btn ghost" id="cw-back">' + Icon("chevron-left", { size: 14 }) + ' All coworkers</button>' +
         '<div><button class="btn" id="cw-edit">Edit</button> ' +
         '<button class="btn ghost" id="cw-del">Delete</button></div></div>';
 
@@ -380,20 +380,20 @@ const CoworkersUI = (() => {
         (wl ? '<div class="cw-workline">' + esc(wl) + "</div>" : "") +
         '<div class="cw-actions">' +
         '<button class="btn' + (c.isFavorite ? " primary" : "") + '" id="cw-fav">' +
-          (c.isFavorite ? "★ Favorited" : "☆ Favorite") + "</button>";
+          (c.isFavorite ? Icon("star", { size: 14 }) + " Favorited" : Icon("star", { size: 14 }) + " Favorite") + "</button>";
 
       const phone = primaryPhone(c);
       if (phone) {
         const tel = callablePhone(phone);
-        html += '<a class="btn" href="tel:' + esc(tel) + '">📞 Call</a>' +
-          '<a class="btn" href="sms:' + esc(tel) + '">💬 Text</a>';
+        html += '<a class="btn" href="tel:' + esc(tel) + '">' + Icon("phone", { size: 14 }) + ' Call</a>' +
+          '<a class="btn" href="sms:' + esc(tel) + '">' + Icon("chat", { size: 14 }) + ' Text</a>';
       }
       const email = primaryEmail(c);
-      if (email) html += '<a class="btn" href="mailto:' + esc(email) + '">✉️ Email</a>';
+      if (email) html += '<a class="btn" href="mailto:' + esc(email) + '">' + Icon("mail", { size: 14 }) + ' Email</a>';
       if (c.linkedUserID) {
-        html += '<button class="btn" id="cw-leaderboard">🏆 Leaderboard</button>';
+        html += '<button class="btn" id="cw-leaderboard">' + Icon("trophy", { size: 14 }) + ' Leaderboard</button>';
       } else {
-        html += '<button class="btn ghost" id="cw-compare-one">⚖️ Compare sales</button>';
+        html += '<button class="btn ghost" id="cw-compare-one">' + Icon("swap", { size: 14 }) + ' Compare sales</button>';
       }
       html += "</div></div>";
 
@@ -530,7 +530,7 @@ const CoworkersUI = (() => {
       });
     }
     html += '<div class="shift-note-form"><input type="date" id="sn-date" value="' +
-      new Date().toISOString().slice(0, 10) + '">' +
+      PayEngine.dayKey(new Date()) + '">' +
       '<input type="text" id="sn-label" placeholder="Shift label (e.g. 2–11)">' +
       '<textarea id="sn-text" rows="2" placeholder="Note about this shift…"></textarea>' +
       '<button class="btn primary" id="sn-add">Add shift note</button></div>';
@@ -541,7 +541,7 @@ const CoworkersUI = (() => {
       if (!text) return;
       const note = {
         id: uid(),
-        date: boxEl.querySelector("#sn-date").value || new Date().toISOString().slice(0, 10),
+        date: boxEl.querySelector("#sn-date").value || PayEngine.dayKey(new Date()),
         shiftLabel: boxEl.querySelector("#sn-label").value.trim(),
         text,
         createdAt: new Date().toISOString(),
@@ -625,17 +625,17 @@ const CoworkersUI = (() => {
       '<div class="lv-row" data-kind="' + kind + '">' +
       '<input class="lv-label" placeholder="Label" value="' + esc(it.label || "") + '">' +
       '<input class="lv-value" placeholder="Value" value="' + esc(it.value || "") + '">' +
-      '<button class="btn ghost sm lv-del" type="button">✕</button></div>';
+      '<button class="btn ghost sm lv-del" type="button" aria-label="Remove">' + Icon("close", { size: 14 }) + '</button></div>';
 
     const lvSection = (title, items, kind, valuePh) =>
       '<div class="form-group"><label>' + esc(title) + "</label>" +
       '<div class="lv-list" data-list="' + kind + '">' +
       (items || []).map(it => lvRow(it, kind)).join("") + "</div>" +
-      '<button class="btn ghost sm lv-add" data-add="' + kind + '" type="button">＋ Add ' +
+      '<button class="btn ghost sm lv-add" data-add="' + kind + '" type="button">' + Icon("plus", { size: 14 }) + ' Add ' +
       esc(title.toLowerCase()) + "</button></div>";
 
     let html = '<div class="cw-detail-nav">' +
-      '<button class="btn ghost" id="cf-back">‹ Cancel</button>' +
+      '<button class="btn ghost" id="cf-back">' + Icon("chevron-left", { size: 14 }) + ' Cancel</button>' +
       "<h2>" + (existing ? "Edit contact" : "New coworker") + "</h2></div>" +
       '<div class="panel contact-form">';
 
@@ -786,7 +786,7 @@ const CoworkersUI = (() => {
     const state = {
       contactId: preselectId || null,
       name: "",
-      dayKey: dayKey || new Date().toISOString().slice(0, 10),
+      dayKey: dayKey || PayEngine.dayKey(new Date()),
       hours: "",
       pasted: "",
       tickets: [],
@@ -806,7 +806,7 @@ const CoworkersUI = (() => {
       .sort((a, b) => (a.favoriteRank || 0) - (b.favoriteRank || 0));
 
     let html = '<div class="cw-detail-nav">' +
-      '<button class="btn ghost" id="cmp-back">‹ Coworkers</button>' +
+      '<button class="btn ghost" id="cmp-back">' + Icon("chevron-left", { size: 14 }) + ' Coworkers</button>' +
       "<h2>Compare sales</h2></div>" +
       '<div class="panel"><p class="muted">Pick a coworker — their numbers go head-to-head ' +
       "with yours and never mix into your own sales.</p>";
@@ -831,7 +831,7 @@ const CoworkersUI = (() => {
       sorted.forEach(c => {
         html += '<option value="' + esc(c.id) + '"' +
           (String(state.contactId) === String(c.id) ? " selected" : "") + ">" +
-          esc(preferredName(c)) + (c.isFavorite ? " ★" : "") + "</option>";
+          esc(preferredName(c)) + (c.isFavorite ? " (favorite)" : "") + "</option>";
       });
       html += "</select>";
     }
@@ -929,7 +929,7 @@ const CoworkersUI = (() => {
     });
     const base = new Date(dayKey + "T12:00:00").getTime();
     return order.map((key, i) => ({
-      id: "their-" + uid(),
+      id: uid(),
       time: new Date(base + i * 60000).toISOString(),
       customerNote: key,
       lines: (buckets[key] || []).map(l => ({
@@ -1025,7 +1025,7 @@ const CoworkersUI = (() => {
       const name = (state.name || "").trim();
 
       let html = '<div class="cw-detail-nav">' +
-        '<button class="btn ghost" id="cmp-back2">‹ Re-paste</button>' +
+        '<button class="btn ghost" id="cmp-back2">' + Icon("chevron-left", { size: 14 }) + ' Re-paste</button>' +
         "<h2>You vs " + esc(name) + "</h2></div>";
 
       html += totalsGridHTML(yours, theirs, name);
@@ -1135,9 +1135,9 @@ const CoworkersUI = (() => {
       yours.customers < theirs.customers,
     ].filter(Boolean).length;
     let verdict;
-    if (wins > losses) verdict = "You took it. 🏆";
+    if (wins > losses) verdict = "You took it.";
     else if (losses > wins) verdict = esc(coworkerName) + " took it.";
-    else verdict = "Dead even. 🤝";
+    else verdict = "Dead even.";
     let html = '<div class="panel"><div class="section-title">What decided it</div>' +
       '<div class="cmp-verdict">' + verdict + "</div>";
     const gap = (label, a, b, fmt) => {
@@ -1207,9 +1207,9 @@ const CoworkersUI = (() => {
       }
       const name = cp.coworkerName || "Them";
       let html = '<div class="cw-detail-nav">' +
-        '<button class="btn ghost" id="cp-back">‹ Coworkers</button>' +
+        '<button class="btn ghost" id="cp-back">' + Icon("chevron-left", { size: 14 }) + ' Coworkers</button>' +
         '<div><button class="btn ghost" id="cp-del">Delete</button></div></div>' +
-        '<div class="panel"><h2>⚖️ You vs ' + esc(name) + "</h2>" +
+        '<div class="panel"><h2>You vs ' + esc(name) + "</h2>" +
         '<div class="muted">' + esc(longDate(cp.dayKey || cp.date)) + "</div></div>";
       html += totalsGridHTML(cp.yours || {}, cp.theirs || {}, name);
       html += insightsHTML(cp.yours || {}, cp.theirs || {}, name);

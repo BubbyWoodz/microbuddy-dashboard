@@ -1,54 +1,99 @@
 "use strict";
-/* ============ settings.js — Settings tab: theme picker + AI config ============
- * Theme: applied instantly via SyncEngine.setTheme(), saved to the server
- *   (per Apple user) and cached in IndexedDB for offline use.
- * AI config: SERVER-ONLY. Fetched live from /api/ai-config, never cached
- *   on the device. The API key field is write-only — the server never
- *   returns it (only api_key_set: true/false).
+/* ============ settings.js — Settings pages: Buddy AI, Appearance, This dashboard ============
+ * Appearance: the phone is the source of truth. "Match iPhone" (default)
+ *   applies profile.themePreference from the synced backup blob; when the
+ *   phone hasn't shared a theme (or the switch is off) the manual pick here
+ *   is used. The manual pick is stored only in this browser (IndexedDB) and
+ *   is never written to the blob — the iPhone keeps its own theme.
+ * Buddy AI: SERVER-ONLY config. Fetched live from /api/ai-config, never
+ *   cached on the device. The API key field is write-only.
+ * This dashboard: screen lock, offline cache, chat history, sign out.
  */
 const SettingsUI = (() => {
+  // Exact titles/subtitles from ThemePreference.swift.
   const THEMES = [
-    { id: "auto", name: "Auto", desc: "Follows your device's appearance", swatch: "#8b94a7" },
-    { id: "light", name: "Light", desc: "Always the bright look", swatch: "#f4f5f7" },
-    { id: "dark", name: "Dark", desc: "Always the dark look", swatch: "#0d1017" },
-    { id: "terminal", name: "Terminal", desc: "Blue-on-black text mode", swatch: "#000000" },
-    { id: "modern", name: "Modern", desc: "Frosted glass over Bliss", swatch: "#3a9bdc" },
-    { id: "win95", name: "Win95", desc: "Teal desktop, beveled panels", swatch: "#008080" },
+    { id: "auto", name: "Auto", desc: "Follows your phone's appearance",
+      swatch: "linear-gradient(135deg,#f2f2f7 0 50%,#0b1220 50% 100%)" },
+    { id: "light", name: "Light", desc: "Always the bright look",
+      swatch: "linear-gradient(160deg,#ffffff,#e9edf5)" },
+    { id: "dark", name: "Dark", desc: "Always the dark look",
+      swatch: "linear-gradient(160deg,#1b2540,#0b1220)" },
+    { id: "terminal", name: "Terminal", desc: "Blue-on-black text-mode dashboard",
+      swatch: "repeating-linear-gradient(0deg,#000 0 6px,#04122a 6px 7px)" },
+    { id: "modern", name: "Modern (Frosted Glass)", desc: "Bliss wallpaper under frosted glass",
+      swatch: "linear-gradient(180deg,#3d8ee8 0 55%,#5aa83a 55% 100%)" },
+    { id: "win95", name: "Windows 95", desc: "Teal desktop, beveled silver chrome",
+      swatch: "linear-gradient(180deg,#000080 0 22%,#c0c0c0 22% 100%)" },
   ];
+  const TITLE = Object.fromEntries(THEMES.map(t => [t.id, t.name]));
+  const I = (n, o) => (typeof Icon === "function" ? Icon(n, o) : "");
 
-  let loaded = false;
+  // ---------------- Appearance ----------------
+  async function renderAppearance(box) {
+    if (!box) return;
+    const st = await SyncEngine.themeState();
+    const follow = st.mode !== "manual";
+    let status;
+    if (st.phone) {
+      status = follow
+        ? `Matching your iPhone: <b>${esc(TITLE[st.phone] || st.phone)}</b>. Change it on the phone and this dashboard follows on the next sync.`
+        : `Your iPhone uses <b>${esc(TITLE[st.phone] || st.phone)}</b>. This dashboard is using its own pick below.`;
+    } else {
+      status = follow
+        ? `Your iPhone hasn't shared its theme yet (needs the app update that syncs it), so the pick below is used until it does.`
+        : `Using the pick below on this dashboard.`;
+    }
+    box.innerHTML =
+      `<div class="panel"><div class="settings-row static">` +
+      `<span class="sr-ico">${I("phone")}</span><span class="sr-text"><span class="sr-title">Match iPhone</span>` +
+      `<span class="sr-sub">Use whatever theme your phone is set to</span></span>` +
+      `<label class="switch"><input type="checkbox" id="theme-follow"${follow ? " checked" : ""}><span></span></label></div>` +
+      `<div class="hint" id="theme-status">${status}</div></div>` +
+      `<div class="panel"><div class="sec-head"><div class="grow"><div class="sec-title">Theme</div>` +
+      `<div class="sec-sub">Pick how Micro Buddy looks${follow && st.phone ? " — picking one turns off Match iPhone" : ""}</div></div></div>` +
+      `<div class="theme-grid">` + THEMES.map(t => {
+        const sel = t.id === st.effective;
+        return `<button class="theme-card${sel ? " selected" : ""}" data-theme-id="${t.id}">` +
+          `<span class="theme-swatch" style="background:${t.swatch}"></span>` +
+          `<span class="theme-name">${esc(t.name)}${sel ? " " + I("check-circle", { size: 16, cls: "ico accent" }) : ""}</span>` +
+          `<span class="theme-desc">${esc(t.desc)}</span></button>`;
+      }).join("") + `</div>` +
+      `<div class="hint" style="margin-top:12px">Auto matches your computer's Light or Dark Mode. Terminal re-skins the whole dashboard as a blue-on-black text dashboard; Modern lays a Bliss wallpaper under frosted-glass panels; Windows 95 turns it into a teal desktop with beveled silver windows. Your data and math stay exactly the same.</div></div>`;
 
-  function themePickerHTML(current) {
-    return '<div class="theme-grid">' + THEMES.map(t =>
-      '<button class="theme-card' + (t.id === current ? " selected" : "") + '" data-theme-id="' + t.id + '">' +
-      '<span class="theme-swatch" style="background:' + t.swatch + '"></span>' +
-      '<span class="theme-name">' + t.name + "</span>" +
-      '<span class="theme-desc">' + t.desc + "</span>" +
-      "</button>"
-    ).join("") + "</div>";
+    box.querySelector("#theme-follow").addEventListener("change", async e => {
+      await SyncEngine.setThemeMode(e.target.checked ? "phone" : "manual");
+      renderAppearance(box);
+    });
+    box.querySelectorAll(".theme-card").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        await SyncEngine.setTheme(btn.dataset.themeId); // manual mode
+        renderAppearance(box);
+      });
+    });
   }
 
+  // ---------------- Buddy AI ----------------
   function aiFormHTML() {
     return (
-      '<div class="field-row"><label>Provider</label>' +
+      '<div class="field"><label>Provider</label>' +
       '<select id="ai-provider">' +
       '<option value="disabled">Disabled</option>' +
       '<option value="ollama">Ollama (local)</option>' +
       '<option value="openai">OpenAI-compatible endpoint</option>' +
       "</select></div>" +
-      '<div class="field-row"><label>Server URL</label>' +
+      '<div class="field"><label>Server URL</label>' +
       '<input type="url" id="ai-url" placeholder="http://umbrel.local:11434" autocomplete="off" spellcheck="false">' +
       '<div class="hint">Ollama default: http://localhost:11434 if it runs on this same server (the dashboard reaches it, not your browser) — no key needed on your LAN.</div></div>' +
-      '<div class="field-row"><label>Model</label>' +
+      '<div class="field"><label>Model</label>' +
       '<input type="text" id="ai-model" placeholder="llama3.2" autocomplete="off" spellcheck="false" list="ai-model-list">' +
       '<datalist id="ai-model-list"></datalist>' +
       '<div class="hint">Type a model name, or <button type="button" class="link-btn" id="ai-load-models">load the list</button> from your server.</div></div>' +
-      '<div class="field-row"><label>API key <span class="opt">(optional)</span></label>' +
+      '<div class="field"><label>API key <span class="opt">(optional)</span></label>' +
       '<input type="password" id="ai-key" placeholder="Leave blank to keep the saved key" autocomplete="new-password">' +
       '<div class="hint" id="ai-key-hint"></div></div>' +
-      '<div class="btn-row">' +
-      '<button class="btn" id="ai-save">Save AI settings</button>' +
-      '<button class="btn ghost" id="ai-test">Test connection</button>' +
+      '<div class="btn-row" style="margin-top:12px">' +
+      '<button class="btn primary" id="ai-save">' + I("check") + ' Save AI settings</button>' +
+      '<button class="btn ghost" id="ai-test">' + I("zap") + ' Test connection</button>' +
       "</div>" +
       '<div id="ai-status" class="form-status"></div>' +
       '<div class="hint" style="margin-top:10px">Stored on the server only — never on this device. ' +
@@ -56,128 +101,68 @@ const SettingsUI = (() => {
     );
   }
 
-  async function load() {
-    if (loaded) return;
-    loaded = true;
-    const box = document.getElementById("settings-body");
-    const currentTheme = document.documentElement.getAttribute("data-theme") || "dark";
-
+  async function renderAI(box) {
+    if (!box) return;
     box.innerHTML =
-      '<div class="section-title">Appearance</div>' +
-      '<div class="panel"><div class="li-sub" style="margin-bottom:10px">Theme syncs from your iPhone app — the phone is the source of truth.</div>' +
-      themePickerHTML(currentTheme) +
-      '<div class="btn-row" style="margin-top:10px">' +
-      '<button class="btn ghost" id="theme-sync-now">Sync now</button>' +
-      '<span id="theme-sync-status" class="form-status" style="margin:0"></span>' +
-      "</div></div>" +
-      '<div class="section-title">Buddy AI</div>' +
-      '<div class="panel" id="ai-panel">' + aiFormHTML() + "</div>" +
-      '<div class="section-title">Data</div>' +
-      '<div class="panel">' +
-      '<div class="list-item"><div class="li-main">Offline cache<div class="li-sub" id="cache-size">—</div></div>' +
-      '<button class="btn ghost" id="clear-cache">Clear</button></div>' +
-      '<div class="list-item"><div class="li-main">Chat history<div class="li-sub">Buddy conversations (synced)</div></div>' +
-      '<button class="btn ghost" id="clear-chat">Clear</button></div>' +
-      '<div class="list-item" style="border:none"><div class="li-main">Sign out<div class="li-sub">On this device only</div></div>' +
-      '<button class="btn ghost" id="signout-btn">Sign out</button></div>' +
-      "</div>" +
-      '<div class="section-title">Dashboard</div>' +
-      '<div class="panel">' +
-      '<div class="li-sub" style="margin-bottom:10px">Dashboard-only settings — these never leave this browser.</div>' +
-      '<div class="list-item"><div class="li-main">Screen lock<div class="li-sub" id="screen-lock-sub">Optional password after idle</div></div>' +
-      '<button class="btn ghost" id="screen-lock-toggle">Off</button></div>' +
-      '<div class="list-item"><div class="li-main">Lock after<div class="li-sub">Idle time before the password appears</div></div>' +
-      '<select id="screen-lock-timeout" style="width:auto">' +
-      '<option value="1">1 minute</option><option value="5">5 minutes</option>' +
-      '<option value="15">15 minutes</option><option value="30">30 minutes</option>' +
-      '<option value="60">1 hour</option></select></div>' +
-      '<div class="list-item" style="border:none"><div class="li-main">Password<div class="li-sub">Forgot it? Unlink from the iPhone app to reset</div></div>' +
-      '<button class="btn ghost" id="screen-lock-pw">Set password</button></div>' +
-      '<div class="btn-row"><button class="btn ghost" id="screen-lock-now">Lock now</button>' +
-      '<span id="screen-lock-status" class="form-status" style="margin:0"></span></div>' +
-      "</div>";
-
-    // Theme picker
-    box.querySelectorAll(".theme-card").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        box.querySelectorAll(".theme-card").forEach(b => b.classList.remove("selected"));
-        btn.classList.add("selected");
-        await SyncEngine.setTheme(btn.dataset.themeId);
-      });
-    });
-
-    // Pull the latest theme from the iPhone (via the server) and apply it.
-    document.getElementById("theme-sync-now").addEventListener("click", async () => {
-      const status = document.getElementById("theme-sync-status");
-      status.textContent = "Syncing…";
-      status.className = "form-status";
-      try {
-        const res = await fetch("/api/preferences");
-        if (!res.ok) throw new Error("request failed");
-        const prefs = await res.json();
-        if (prefs && prefs.theme) {
-          await SyncEngine.setTheme(prefs.theme);
-          box.querySelectorAll(".theme-card").forEach(b =>
-            b.classList.toggle("selected", b.dataset.themeId === prefs.theme));
-          status.textContent = "Synced from iPhone.";
-          status.className = "form-status ok";
-        } else {
-          throw new Error("no theme returned");
-        }
-      } catch (e) {
-        status.textContent = "Sync failed: " + e.message;
-        status.className = "form-status error";
-      }
-    });
-
-    // AI config — always fetched live, never from device storage.
+      '<div class="grid"><div class="panel col-7" id="ai-panel"><div class="sec-head"><div class="grow"><div class="sec-title">Model</div>' +
+      '<div class="sec-sub">Where Buddy\'s answers come from</div></div></div>' + aiFormHTML() + "</div>" +
+      '<div class="panel col-5"><div class="sec-head"><div class="grow"><div class="sec-title">Chat history</div>' +
+      '<div class="sec-sub">Buddy conversations sync with the server</div></div></div>' +
+      '<div class="list-item"><div class="li-main">Clear chat history<div class="li-sub">Deletes it on this device and the server</div></div>' +
+      '<button class="btn ghost danger sm" id="clear-chat">' + I("trash", { size: 14 }) + ' Clear</button></div></div></div>';
     await loadAIConfig();
-
     document.getElementById("ai-save").addEventListener("click", saveAIConfig);
     document.getElementById("ai-test").addEventListener("click", testAIConfig);
     document.getElementById("ai-provider").addEventListener("change", toggleAIFields);
     document.getElementById("ai-load-models").addEventListener("click", loadAIModels);
-
-    // Cache info
-    try {
-      const n = await MBDB.getCacheCount();
-      document.getElementById("cache-size").textContent = n + " cached responses";
-    } catch (e) { /* ignore */ }
-
-    document.getElementById("clear-cache").addEventListener("click", async () => {
-      if (!confirm("Clear all cached sales data on this device? It'll re-download on next sync.")) return;
-      await MBDB.clearCache();
-      await MBDB.kvSet("lastSync", 0);
-      await MBDB.kvSet("fullSyncDone", false);
-      document.getElementById("cache-size").textContent = "0 cached responses";
-    });
     document.getElementById("clear-chat").addEventListener("click", async () => {
       if (!confirm("Delete all Buddy chat history (this device and the server)?")) return;
       const sessions = await MBDB.listChatSessions().catch(() => []);
       for (const s of sessions) await MBDB.clearChat(s).catch(() => {});
       await MBDB.kvSet("chatSessions", []).catch(() => {});
       await MBDB.kvSet("chatSyncTs", 0).catch(() => {});
-      if (navigator.onLine) {
-        try { await fetch("/api/chat", { method: "DELETE" }); } catch (e) {}
-      }
-      BuddyUI.reset();
+      if (navigator.onLine) { try { await fetch("/api/chat", { method: "DELETE" }); } catch (e) {} }
+      try { BuddyUI.reset(); } catch (e) {}
+      if (window.toast) window.toast("Chat history cleared");
     });
-    // ---- Dashboard: screen lock (dashboard-only, optional) ----
+  }
+
+  // ---------------- This dashboard (device) ----------------
+  async function renderDevice(box) {
+    if (!box) return;
+    box.innerHTML =
+      '<div class="sec-head"><div class="grow"><div class="sec-title">This dashboard</div>' +
+      '<div class="sec-sub">Device-only settings — these never leave this browser</div></div></div>' +
+      '<div class="list-item"><div class="li-main">Screen lock<div class="li-sub" id="screen-lock-sub">Optional password after idle</div></div>' +
+      '<button class="btn ghost sm" id="screen-lock-toggle">Off</button></div>' +
+      '<div class="list-item"><div class="li-main">Lock after<div class="li-sub">Idle time before the password appears</div></div>' +
+      '<select id="screen-lock-timeout" style="width:auto">' +
+      '<option value="1">1 minute</option><option value="5">5 minutes</option>' +
+      '<option value="15">15 minutes</option><option value="30">30 minutes</option>' +
+      '<option value="60">1 hour</option></select></div>' +
+      '<div class="list-item"><div class="li-main">Password<div class="li-sub">Forgot it? Unlink from the iPhone app to reset</div></div>' +
+      '<button class="btn ghost sm" id="screen-lock-setpw">Set password</button></div>' +
+      '<div class="list-item"><div class="li-main">Lock now<div class="li-sub" id="screen-lock-status">Requires a password</div></div>' +
+      '<button class="btn ghost sm" id="screen-lock-now">' + I("lock", { size: 14 }) + ' Lock</button></div>' +
+      '<div class="list-item"><div class="li-main">Offline data<div class="li-sub" id="cache-size">Your synced backup is stored in this browser</div></div>' +
+      '<button class="btn ghost sm" id="clear-cache">' + I("refresh", { size: 14 }) + ' Re-download</button></div>' +
+      '<div class="list-item"><div class="li-main">Sign out<div class="li-sub">On this device only — the iPhone stays linked to others</div></div>' +
+      '<button class="btn ghost danger sm" id="signout-btn">' + I("logout", { size: 14 }) + ' Sign out</button></div>';
+
     try {
-      const slStatus = document.getElementById("screen-lock-status");
-      const slToggle = document.getElementById("screen-lock-toggle");
-      const slTimeout = document.getElementById("screen-lock-timeout");
-      const slPwBtn = document.getElementById("screen-lock-pw");
-      const slSub = document.getElementById("screen-lock-sub");
-      const slSay = (m) => { if (slStatus) { slStatus.textContent = m; setTimeout(() => { slStatus.textContent = ""; }, 4000); } };
+      const slStatus = box.querySelector("#screen-lock-status");
+      const slToggle = box.querySelector("#screen-lock-toggle");
+      const slTimeout = box.querySelector("#screen-lock-timeout");
+      const slPwBtn = box.querySelector("#screen-lock-setpw");
+      const slSub = box.querySelector("#screen-lock-sub");
+      const slSay = (m) => { if (slStatus) { slStatus.textContent = m; setTimeout(() => { slStatus.textContent = "Requires a password"; }, 4000); } };
       const slRefresh = () => {
         const st = ScreenLock.getState();
         slToggle.textContent = st.enabled ? "On" : "Off";
+        slToggle.classList.toggle("primary", st.enabled);
         slTimeout.value = String(st.timeoutMin);
         slPwBtn.textContent = st.hasPassword ? "Change password" : "Set password";
-        if (slSub) slSub.textContent = st.enabled
-          ? "On — locks after " + st.timeoutMin + " min idle"
-          : "Optional password after idle";
+        if (slSub) slSub.textContent = st.enabled ? "On — locks after " + st.timeoutMin + " min idle" : "Optional password after idle";
       };
       slToggle.addEventListener("click", () => {
         const st = ScreenLock.getState();
@@ -188,10 +173,7 @@ const SettingsUI = (() => {
             const r = ScreenLock.setPassword(pw);
             if (!r.ok) { slSay(r.error); return; }
             slSay("Screen lock on.");
-          } else {
-            ScreenLock.setEnabled(true);
-            slSay("Screen lock on.");
-          }
+          } else { ScreenLock.setEnabled(true); slSay("Screen lock on."); }
         } else {
           const pw = prompt("Enter your current password to turn the lock off:");
           if (pw === null) return;
@@ -201,10 +183,7 @@ const SettingsUI = (() => {
         }
         slRefresh();
       });
-      slTimeout.addEventListener("change", () => {
-        ScreenLock.setTimeoutMin(slTimeout.value);
-        slRefresh();
-      });
+      slTimeout.addEventListener("change", () => { ScreenLock.setTimeoutMin(slTimeout.value); slRefresh(); });
       slPwBtn.addEventListener("click", () => {
         const st = ScreenLock.getState();
         if (st.hasPassword) {
@@ -218,15 +197,22 @@ const SettingsUI = (() => {
         slSay(r.ok ? "Password saved — lock on." : r.error);
         slRefresh();
       });
-      document.getElementById("screen-lock-now").addEventListener("click", () => {
-        ScreenLock.lockNow();
-      });
+      box.querySelector("#screen-lock-now").addEventListener("click", () => ScreenLock.lockNow());
       slRefresh();
-    } catch (e) { /* screen lock unavailable — settings still work */ }
+    } catch (e) { /* screen lock unavailable */ }
 
-    document.getElementById("signout-btn").addEventListener("click", async () => {
+    box.querySelector("#clear-cache").addEventListener("click", async () => {
+      if (!confirm("Re-download your data from the cloud? Unsynced edits stay queued.")) return;
+      try { await MBDB.clearCache(); } catch (e) {}
+      await MBDB.kvSet("lastSync", 0).catch(() => {});
+      try { await SyncEngine.incrementalSync({ force: true }); } catch (e) {}
+      if (window.toast) window.toast("Data re-downloaded");
+    });
+    box.querySelector("#signout-btn").addEventListener("click", async () => {
       if (!confirm("Sign out of Micro Buddy on this device?")) return;
-      await fetch("/logout");
+      try { await MBDB.wipeAll(); } catch (e) {}
+      try { localStorage.removeItem("mb_supabase_session"); } catch (e) {}
+      try { await fetch("/logout"); } catch (e) {}
       location.reload();
     });
   }
@@ -242,7 +228,7 @@ const SettingsUI = (() => {
       document.getElementById("ai-url").value = cfg.server_url || "";
       document.getElementById("ai-model").value = cfg.model || "";
       document.getElementById("ai-key-hint").textContent = cfg.api_key_set
-        ? "● An API key is saved on the server."
+        ? "An API key is saved on the server."
         : "No API key saved.";
       toggleAIFields();
     } catch (e) {
@@ -280,7 +266,7 @@ const SettingsUI = (() => {
       if (!res.ok) throw new Error(data.error || "save failed");
       document.getElementById("ai-key").value = "";
       document.getElementById("ai-key-hint").textContent = data.api_key_set
-        ? "● An API key is saved on the server."
+        ? "An API key is saved on the server."
         : "No API key saved.";
       status.textContent = "Saved. Buddy will use these settings.";
       status.className = "form-status ok";
@@ -357,13 +343,16 @@ const SettingsUI = (() => {
     }
   }
 
-  function reset() { loaded = false; }
+  function reset() {}
 
-  // Expose for the theme to be applied before first paint on boot.
+  // Apply the cached/phone theme before first paint on boot.
   async function applyCachedTheme() {
-    const t = await MBDB.kvGet("theme").catch(() => null);
-    SyncEngine.applyTheme(t || "dark");
+    try { await SyncEngine.syncPreferences(); }
+    catch (e) { SyncEngine.applyTheme("auto"); }
   }
 
-  return { load, reset, applyCachedTheme, THEMES };
+  // Back-compat: old callers used SettingsUI.load() for the AI page.
+  async function load() { await renderAI(document.getElementById("settings-ai-body")); }
+
+  return { load, reset, renderAI, renderAppearance, renderDevice, applyCachedTheme, THEMES };
 })();

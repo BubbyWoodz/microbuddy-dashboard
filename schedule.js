@@ -18,7 +18,7 @@
  *     secondLunchStart}. lunchStart/secondLunchStart are ISO8601.
  *     Auto minutes: <5h→0, 5–<11h→60, ≥11h→90. User picks times only.
  *   ICS URL: data.profile.icsURL. Reminders: data.profile.reminders.
- *   Holidays: data.profile.holidayDates (["yyyy-MM-dd"]) — synced via blob.
+ *   Holidays: data.holidayDates (["yyyy-MM-dd"], top level like iOS AppData).
  *
  * All edits go through SyncEngine.queueWrite (offline-first op queue).
  *
@@ -58,12 +58,7 @@ const ScheduleUI = (() => {
     c.setDate(c.getDate() - c.getDay()); return c;
   }
   function startOfDay(d) { const c = new Date(d); c.setHours(0, 0, 0, 0); return c; }
-  function uuid() {
-    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
-      const r = Math.random() * 16 | 0;
-      return (c === "x" ? r : (r & 0x3 | 0x8)).toString(16);
-    });
-  }
+  function uuid() { return AppDataSanitizer.uuid(); }
   function spinner(msg) { return '<div class="spinner">' + esc(msg || "Loading…") + "</div>"; }
 
   // ---------------------------------------------------------------------------
@@ -166,11 +161,15 @@ const ScheduleUI = (() => {
     return s.slice().sort((a, b) => new Date(a.start) - new Date(b.start));
   }
   async function getProfile() { return (await getBlobData()).profile || {}; }
-  async function getDay(dayKey) {
-    const d = await getBlobData();
-    return (d.days && d.days[dayKey]) || null;
+  // data.days is an ARRAY of WorkDay (keyed by id) — index it by day key.
+  function indexDays(list) {
+    const map = {};
+    (Array.isArray(list) ? list : Object.values(list || {})).forEach(d => { if (d && d.id) map[d.id] = d; });
+    return map;
   }
-  async function getDays() { return (await getBlobData()).days || {}; }
+  async function getDay(dayKey) { return indexDays((await getBlobData()).days)[dayKey] || null; }
+  async function getDays() { return indexDays((await getBlobData()).days); }
+  const I = (n, o) => (typeof Icon === "function" ? Icon(n, o) : "");
   async function getContacts() {
     const d = await getBlobData();
     return Array.isArray(d.contacts) ? d.contacts : [];
@@ -185,6 +184,7 @@ const ScheduleUI = (() => {
   let shifts = [];
   let profile = {};
   let days = {};
+  let table = null;
   let syncing = false;
   let syncMessage = "";
 
@@ -207,25 +207,30 @@ const ScheduleUI = (() => {
     for (let i = 0; i < 7; i++) {
       const d = new Date(weekStart); d.setDate(d.getDate() + i);
       const key = dayKeyOf(d);
-      const hasShift = shifts.some(sh => shiftDayKey(sh) === key);
+      const dayShifts = shifts.filter(sh => shiftDayKey(sh) === key);
       const isSel = key === selectedDayKey, isToday = key === todayKey;
+      const logged = days[key] && Array.isArray(days[key].tickets) && days[key].tickets.length;
+      const meta = dayShifts.length
+        ? fmtTime(new Date(dayShifts[0].start)).replace(":00", "").replace(/\s/g, "").toLowerCase() + "–" +
+          fmtTime(new Date(dayShifts[dayShifts.length - 1].end)).replace(":00", "").replace(/\s/g, "").toLowerCase()
+        : "Off";
       chips.push(
-        '<button class="week-chip' + (isSel ? " selected" : "") + (isToday && !isSel ? " today" : "") +
+        '<button class="week-chip' + (isSel ? " selected" : "") + (isToday ? " today" : "") +
         '" data-day="' + key + '">' +
         '<span class="wc-dow">' + d.toLocaleDateString(undefined, { weekday: "short" }).toUpperCase() + "</span>" +
         '<span class="wc-num">' + d.getDate() + "</span>" +
-        '<span class="wc-dots">' + (hasShift ? '<span class="wc-dot"></span>' : "") + "</span>" +
+        '<span class="wc-meta">' + esc(meta) + "</span>" +
+        '<span class="wc-dots">' + (dayShifts.length ? '<span class="wc-dot"></span>' : "") +
+        (logged ? '<span class="wc-dot money"></span>' : "") + "</span>" +
         "</button>"
       );
     }
     return (
-      '<div class="week-head"><div class="week-month">' + esc(monthTitle) + "</div>" +
-      '<button class="btn ghost sm" id="wk-today">Today</button></div>' +
-      '<div class="week-strip">' + chips.join("") + "</div>" +
-      '<div class="week-foot">' +
-      '<button class="btn ghost sm" id="wk-prev">‹ Prev</button>' +
-      '<button class="btn ghost sm" id="wk-next">Next ›</button>' +
-      "</div>"
+      '<div class="week-head"><button class="icon-btn" id="wk-prev" aria-label="Previous week">' + I("chevron-left") + "</button>" +
+      '<div class="week-month">' + esc(monthTitle) + "</div>" +
+      '<button class="icon-btn" id="wk-next" aria-label="Next week">' + I("chevron-right") + "</button>" +
+      '<span class="spacer"></span><button class="btn ghost sm" id="wk-today">Today</button></div>' +
+      '<div class="week-strip">' + chips.join("") + "</div>"
     );
   }
 
@@ -252,14 +257,14 @@ const ScheduleUI = (() => {
       (sh.location ? " · " + esc(sh.location) : "") + "</div>" +
       "</div>" +
       '<div class="shift-head-side"><div class="s-pills">' + shiftPills(sh) + "</div>" +
-      '<button class="icon-btn" data-act="edit-shift" title="Edit shift and lunch break times">✏️</button>' +
+      '<button class="icon-btn" data-act="edit-shift" title="Edit shift and lunch break times" aria-label="Edit shift">' + I("edit") + '</button>' +
       "</div></div>";
     h += '<div class="shift-divider"></div>';
     h += '<div class="shift-lunch" data-lunch-day="' + shiftDayKey(sh) + '" data-lunch-shift="' + esc(sh.id) + '"></div>';
     h += '<div class="shift-divider"></div>';
     h += '<div class="shift-crew" data-crew-shift="' + esc(sh.id) + '"></div>';
     if (sh.isManual) {
-      h += '<button class="btn ghost danger" data-act="delete-shift">🗑 Remove shift</button>';
+      h += '<button class="btn ghost danger sm" data-act="delete-shift">' + I("trash") + ' Remove shift</button>';
     }
     return h + "</div>";
   }
@@ -297,12 +302,12 @@ const ScheduleUI = (() => {
         h += '<div class="li-sub">' + lunchFooter(hrs) + "</div>";
       } else {
         h += '<div class="lunch-row"><span>Lunch at</span>' +
-          '<span class="pill time-pill">🔒 ' + esc(fmtTime(new Date(t1))) + "</span></div>";
+          '<span class="pill time-pill">' + I("lock", { size: 13 }) + ' ' + esc(fmtTime(new Date(t1))) + "</span></div>";
         if (two && t2) {
           h += '<div class="lunch-row"><span>Second lunch at</span>' +
-            '<span class="pill time-pill">🔒 ' + esc(fmtTime(new Date(t2))) + "</span></div>";
+            '<span class="pill time-pill">' + I("lock", { size: 13 }) + ' ' + esc(fmtTime(new Date(t2))) + "</span></div>";
         }
-        h += '<div class="li-sub">🔒 Locked — edit with the pencil above</div>';
+        h += '<div class="li-sub">' + I("lock", { size: 13 }) + ' Locked — edit with the pencil above</div>';
       }
     }
     el.innerHTML = h + "</div>";
@@ -324,7 +329,7 @@ const ScheduleUI = (() => {
   function lunchPickerRow(label, iso, dayKey, field, mins, hrs, sh) {
     if (!iso) {
       return '<div class="lunch-row"><span>' + esc(label) + "</span>" +
-        '<button class="pill add-pill" data-lunch-add>＋ Add time</button></div>';
+        '<button class="pill add-pill" data-lunch-add>' + I("plus", { size: 13 }) + ' Add time</button></div>';
     }
     const d = new Date(iso);
     const v = pad(d.getHours()) + ":" + pad(d.getMinutes());
@@ -342,9 +347,9 @@ const ScheduleUI = (() => {
     try {
       await SyncEngine.queueWrite({
         type: "updateDay", dayId: dayKey,
-        updates: { lunchMinutes: mins, lunchStart: mid.toISOString() },
+        updates: { lunchMinutes: mins, lunchStart: SB.isoSeconds(mid) },
       });
-      days[dayKey] = Object.assign({}, days[dayKey], { lunchMinutes: mins, lunchStart: mid.toISOString() });
+      days[dayKey] = Object.assign({}, days[dayKey], { lunchMinutes: mins, lunchStart: SB.isoSeconds(mid) });
       refresh();
     } catch (e) { alert("Couldn't save lunch time."); }
   }
@@ -359,7 +364,7 @@ const ScheduleUI = (() => {
       const d = parseDayKey(dayKey);
       d.setHours(hh, mm, 0, 0);
       const updates = { lunchMinutes: mins };
-      updates[field] = d.toISOString();
+      updates[field] = SB.isoSeconds(d);
       // Shortening below 5h clears the break; below 11h clears second lunch.
       const hrs = shiftHours(sh);
       if (hrs < 5) { updates.lunchMinutes = 0; updates.lunchStart = null; updates.secondLunchStart = null; }
@@ -382,22 +387,24 @@ const ScheduleUI = (() => {
   function crewRowHTML(sh) {
     const crew = Array.isArray(sh.coworkers) ? sh.coworkers : [];
     let h = '<div class="crew-editor"><div class="crew-head"><span class="section-title">Working with</span>' +
-      '<button class="btn ghost sm" data-crew-open>' + (crew.length ? "Edit" : "＋ Add") + "</button></div>";
+      '<button class="btn ghost sm" data-crew-open>' + (crew.length ? I("edit", { size: 14 }) + " Edit" : I("plus", { size: 14 }) + " Add") + "</button></div>";
     if (!crew.length) {
       h += '<button class="li-sub crew-empty" data-crew-open>Who\'s on this shift with you? Tap to add people.</button>';
     } else {
-      const shown = crew.slice(0, 4);
+      const shown = crew.slice(0, 6);
+      h += '<div class="crew-list">';
       shown.forEach(c => {
         const nm = typeof c === "string" ? c : (c.name || "");
         const obj = typeof c === "string" ? { name: nm } : c;
         const ov = overlapSummary(sh, obj);
         h += '<button class="crew-row" data-crew-open>' +
-          '<span class="avatar">' + esc(initials(nm)) + "</span>" +
+          '<span class="avatar initials">' + esc(initials(nm)) + "</span>" +
           '<span class="crew-name">' + esc(nm) + "</span>" +
           (ov ? '<span class="li-sub">' + esc(ov) + "</span>" : "") +
           "</button>";
       });
-      if (crew.length > 4) h += '<button class="li-sub" data-crew-open>+' + (crew.length - 4) + " more</button>";
+      h += "</div>";
+      if (crew.length > 6) h += '<button class="link-btn" data-crew-open style="margin-top:8px">+' + (crew.length - 6) + " more</button>";
     }
     return h + "</div>";
   }
@@ -427,7 +434,7 @@ const ScheduleUI = (() => {
       '<button class="btn ghost sm" id="cw-done">Done</button></div>' +
       '<div class="li-sub">' + esc(sh.title || "Shift") + " · " + esc(fmtTimeRange(sh.start, sh.end)) + "</div>" +
       '<div class="crew-add"><input type="search" id="cw-q" placeholder="Add a name…" autocomplete="off">' +
-      '<button class="btn ghost" id="cw-submit" disabled>＋</button></div>' +
+      '<button class="btn ghost" id="cw-submit" disabled aria-label="Add">' + I("plus") + '</button></div>' +
       '<div class="crew-results" id="cw-r"></div>' +
       '<div id="cw-hours-step"></div>' +
       '<div class="crew-list" id="cw-list"></div></div>';
@@ -450,7 +457,7 @@ const ScheduleUI = (() => {
           : (ov ? esc(ov + " of your shift") : "");
         return '<div class="crew-row"><span class="avatar">' + esc(initials(nm)) + "</span>" +
           '<span><b>' + esc(nm) + "</b>" + (sub ? '<br><span class="li-sub">' + sub + "</span>" : "") + "</span>" +
-          '<button class="icon-btn danger" data-cw-del="' + i + '">➖</button></div>';
+          '<button class="icon-btn danger" data-cw-del="' + i + '" aria-label="Remove">' + I("minus") + '</button></div>';
       }).join("");
       list.querySelectorAll("[data-cw-del]").forEach(b => {
         b.onclick = () => { crew.splice(+b.dataset.cwDel, 1); saveCrew(); renderList(); };
@@ -502,7 +509,7 @@ const ScheduleUI = (() => {
       '<button class="crew-result" data-cw-pick="' + esc(c.name) + '">' +
       '<span class="avatar">' + esc(initials(c.name)) + "</span>" +
       '<span>' + esc(c.name) + (c.phone ? '<br><span class="li-sub">' + esc(c.phone) + "</span>" : "") + "</span>" +
-      '<span>＋</span></button>'
+      '<span class="navy">' + I("plus") + '</span></button>'
     ).join("");
     r.querySelectorAll("[data-cw-pick]").forEach(b => {
       b.onclick = () => startHoursStep({ name: b.dataset.cwPick });
@@ -535,7 +542,7 @@ const ScheduleUI = (() => {
       const parts = name.split(/\s+/);
       const contact = {
         id: uuid(), firstName: parts[0] || "", lastName: parts.slice(1).join(" "),
-        name, createdAt: new Date().toISOString(),
+        name, createdAt: SB.isoSeconds(new Date()),
       };
       try {
         // addContact op may not exist yet — fall back to shift-only.
@@ -556,7 +563,7 @@ const ScheduleUI = (() => {
       '<div class="seg-row">' +
       '<button class="seg-btn selected" data-hmode="same">Same as me</button>' +
       '<button class="seg-btn" data-hmode="theirs">Their hours</button></div>' +
-      '<div class="li-sub" id="cw-same-label">🕐 Same shift as you: ' + esc(range) + "</div>" +
+      '<div class="li-sub" id="cw-same-label">' + I("clock", { size: 13 }) + ' Same shift as you: ' + esc(range) + "</div>" +
       '<div id="cw-their-times" hidden><div class="field-row2">' +
       '<div class="field"><label>Starts</label><input type="time" id="cw-ts" value="' +
       pad(new Date(sh.start).getHours()) + ":" + pad(new Date(sh.start).getMinutes()) + '"></div>' +
@@ -564,7 +571,7 @@ const ScheduleUI = (() => {
       pad(new Date(sh.end).getHours()) + ":" + pad(new Date(sh.end).getMinutes()) + '"></div>' +
       "</div></div>" +
       '<div class="btn-row"><button class="btn primary" id="cw-add2">Add to shift</button>' +
-      '<button class="btn ghost" id="cw-x">✕</button></div></div>';
+      '<button class="btn ghost" id="cw-x" aria-label="Cancel">' + I("close") + '</button></div></div>';
 
     let mode = "same";
     step.querySelectorAll("[data-hmode]").forEach(b => {
@@ -664,7 +671,7 @@ const ScheduleUI = (() => {
           await SyncEngine.queueWrite({
             type: "addShift",
             shift: {
-              id: uuid(), start: start.toISOString(), end: end.toISOString(),
+              id: uuid(), start: SB.isoSeconds(start), end: SB.isoSeconds(end),
               title, location, isManual: true, isEdited: false, coworkers: [],
             },
           });
@@ -672,7 +679,7 @@ const ScheduleUI = (() => {
           await SyncEngine.queueWrite({
             type: "updateShift", shiftId: existing.id,
             updates: {
-              start: start.toISOString(), end: end.toISOString(),
+              start: SB.isoSeconds(start), end: SB.isoSeconds(end),
               title, location, isEdited: true,
             },
           });
@@ -758,7 +765,7 @@ const ScheduleUI = (() => {
       if (!start || !end) continue;
       out.push({
         id: (ev.UID || "").trim() || uuid(),
-        start: start.toISOString(), end: end.toISOString(),
+        start: SB.isoSeconds(start), end: SB.isoSeconds(end),
         title: icsClean(ev.SUMMARY) || "Shift",
         location: icsClean(ev.LOCATION),
         isManual: false, isEdited: false, coworkers: [],
@@ -827,7 +834,7 @@ const ScheduleUI = (() => {
         }
       }
       shifts = merged;
-      const nowISO = new Date().toISOString();
+      const nowISO = SB.isoSeconds(new Date());
       await SyncEngine.queueWrite({
         type: "updateProfile", updates: { icsURL: url, lastSyncedAt: nowISO },
       }).catch(() => {});
@@ -907,25 +914,25 @@ const ScheduleUI = (() => {
   function comingUpHTML() {
     const now = Date.now();
     const next = shifts.filter(s => new Date(s.end).getTime() > now)
-      .sort((a, b) => new Date(a.start) - new Date(b.start)).slice(0, 8);
-    let h = '<div class="section-title">Coming up</div><div class="li-sub">Your next shifts</div>';
+      .sort((a, b) => new Date(a.start) - new Date(b.start)).slice(0, 10);
+    let h = '<div class="sec-head"><div class="grow"><div class="sec-title">Coming up</div><div class="sec-sub">Your next shifts</div></div></div>';
     if (!next.length) {
-      return h + '<div class="empty-state"><div class="li-sub">No upcoming shifts</div>' +
-        '<div class="li-sub">Sync your UKG calendar to fill this in.</div></div>';
+      return h + '<div class="empty-state"><div class="empty-ico">' + I("calendar", { size: 30 }) + '</div><div class="t">No upcoming shifts</div>' +
+        '<p>Link your UKG calendar in Settings &gt; Workday to fill this in.</p></div>';
     }
     h += '<div class="coming-up">';
     next.forEach(sh => {
       const d = new Date(sh.start);
       const day = days[shiftDayKey(sh)] || {};
       const lunch = lunchSummary(day);
-      h += '<button class="coming-row" data-jump-week="' + dayKeyOf(d) + '" data-shift="' + esc(sh.id) + '">' +
+      h += '<button class="coming-row' + (shiftDayKey(sh) === selectedDayKey ? " selected" : "") + '" data-jump-week="' + dayKeyOf(d) + '" data-shift="' + esc(sh.id) + '">' +
         '<span class="cu-date"><span class="cu-mon">' +
         d.toLocaleDateString(undefined, { month: "short" }).toUpperCase() + "</span>" +
         '<span class="cu-day">' + d.getDate() + "</span></span>" +
         '<span class="cu-main"><span class="cu-dow">' +
         d.toLocaleDateString(undefined, { weekday: "long" }) + "</span>" +
         '<span class="cu-time">' + esc(fmtTimeRange(sh.start, sh.end)) + "</span>" +
-        (crewLine(sh) ? '<span class="li-sub">' + esc(crewLine(sh)) + "</span>" : "") +
+        (crewLine(sh) ? '<span class="cu-crew">' + I("users", { size: 12 }) + " " + esc(crewLine(sh)) + "</span>" : "") +
         (lunch !== "no lunch" ? '<span class="li-sub amber">' + esc(lunch) + "</span>" : "") +
         '</span><span class="cu-hours">' + shiftHours(sh).toFixed(1) + "h</span></button>";
     });
@@ -940,35 +947,39 @@ const ScheduleUI = (() => {
     const d = parseDayKey(selectedDayKey);
     const dayShifts = shifts.filter(sh => shiftDayKey(sh) === selectedDayKey)
       .sort((a, b) => new Date(a.start) - new Date(b.start));
-    let h = '<div class="section-title">' +
-      d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }) + "</div>" +
-      '<div class="li-sub">' + (dayShifts.length
+    let h = '<div class="sec-head"><div class="grow"><div class="sec-title">' +
+      esc(d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })) + "</div>" +
+      '<div class="sec-sub">' + (dayShifts.length
         ? dayShifts.length + " shift" + (dayShifts.length > 1 ? "s" : "")
-        : "No shift scheduled") + "</div>";
+        : "No shift scheduled") + "</div></div>" +
+      '<button class="btn ghost sm" id="sel-add">' + I("plus", { size: 14 }) + " Add shift</button></div>";
     if (!dayShifts.length) {
-      h += '<div class="empty-state"><div class="empty-ico">🌙</div><b>Day off</b>' +
-        '<div class="li-sub">Nothing scheduled. Enjoy it — or add a shift manually from the menu.</div></div>';
+      h += '<div class="empty-state"><div class="empty-ico">' + I("moon", { size: 30 }) + '</div><div class="t">Day off</div>' +
+        '<p>Nothing scheduled. Enjoy it — or add a shift manually.</p></div>';
     } else {
       h += dayShifts.map(shiftCardHTML).join("");
     }
-    // "View day" link when the day has logged sales.
+    // "View day" link when the day has logged sales (WorkDay keyed by id).
     const day = days[selectedDayKey];
-    const commission = day && day.commissionTotal;
-    if (commission > 0) {
+    if (day && Array.isArray(day.tickets) && day.tickets.length) {
+      const commission = PayEngine.dayCommission(day, table || PayEngine.tableForProfile(profile));
       h += '<button class="view-day-row" data-view-day="' + selectedDayKey + '">' +
-        '<span>💵 ' + esc("$" + Number(commission).toFixed(2)) + ' earned</span>' +
-        '<span>View day ›</span></button>';
+        '<span>' + I("cash", { size: 16 }) + ' <b class="' + (commission < -0.005 ? "red" : "money") + '">' + esc(money(commission)) + '</b> earned · ' +
+        day.tickets.length + " ticket" + (day.tickets.length === 1 ? "" : "s") + "</span>" +
+        '<span class="navy">View day ' + I("chevron-right", { size: 14 }) + "</span></button>";
     }
     return h;
   }
 
   // ---------------------------------------------------------------------------
-  // Settings — ICS, holidays, reminders
+  // Workday settings — UKG calendar, holidays, reminders.
+  // Rendered inside Settings > Workday (not on the Schedule page).
   // ---------------------------------------------------------------------------
 
   const LEAVE_OPTS = [20, 30, 45, 60, 90];
   const START_OPTS = [5, 10, 15, 30];
   const LOG_OPTS = [0, 10, 30, 60];
+  let settingsBox = null;
 
   function lastSyncText() {
     if (!(profile.icsURL || "").trim()) return "No calendar linked yet";
@@ -980,72 +991,68 @@ const ScheduleUI = (() => {
 
   function settingsHTML() {
     const r = reminders(), icsURL = profile.icsURL || "";
-    let h = '<div class="section-title">Schedule settings</div>';
-
-    h += '<div class="panel"><div class="sched-card-title">UKG calendar</div>' +
-      '<div class="li-sub">Paste your iCal subscription link</div>' +
+    let h = '<div class="grid">';
+    h += '<div class="panel col-6"><div class="sec-head"><div class="grow"><div class="sec-title">UKG calendar</div>' +
+      '<div class="sec-sub">Paste your iCal subscription link</div></div></div>' +
       '<div class="field"><input type="url" id="ics-url" value="' + esc(icsURL) +
       '" placeholder="https://…/schedule.ics" autocomplete="off" spellcheck="false"></div>' +
-      '<div class="btn-row"><button class="btn primary" id="ics-sync"' +
-      (syncing || !icsURL.trim() ? " disabled" : "") + ">" +
+      '<div class="btn-row" style="margin-top:10px"><button class="btn primary" id="ics-sync"' +
+      (syncing || !icsURL.trim() ? " disabled" : "") + ">" + I("refresh") + " " +
       (syncing ? "Syncing…" : "Sync schedule now") + "</button></div>" +
       (syncMessage ? '<div class="form-status">' + esc(syncMessage) + "</div>" : "") +
-      '<div class="li-sub">🍴 Lunch is automatic: one 60-minute break on 5–11h shifts, ' +
-      "two 30-minute breaks on 11h+ shifts, none under 5h. Set the times on each shift above.</div>" +
-      '<div class="li-sub">📅 ' + esc(lastSyncText()) + "</div></div>";
+      '<div class="kv-row"><span class="k muted">' + I("clock", { size: 14 }) + " " + esc(lastSyncText()) + "</span></div>" +
+      '<div class="hint">Lunch is automatic: one 60-minute break on 5–11h shifts, ' +
+      "two 30-minute breaks on 11h+ shifts, none under 5h. Set the times on each shift in Schedule.</div></div>";
 
     const nHol = holidayDates.length;
-    h += '<div class="panel"><button class="sched-nav-row" id="hol-open">' +
-      "<span>🗓️ <b>Holiday hours</b><br><span class=\"li-sub\">" +
-      (nHol ? nHol + " date(s) with Sunday hours" : "Weekdays that open 11 AM–6 PM") +
-      '</span></span><span class="chev">›</span></button>' +
-      '<div id="hol-editor" hidden></div></div>';
+    h += '<div class="panel col-6"><div class="sec-head"><div class="grow"><div class="sec-title">Holiday hours</div>' +
+      '<div class="sec-sub">' + (nHol ? nHol + " date" + (nHol === 1 ? "" : "s") + " with Sunday hours" : "Weekdays that open 11 AM–6 PM") +
+      '</div></div></div><div id="hol-editor"></div></div>';
 
-    h += '<div class="panel"><div class="sched-card-title">Reminders</div>';
+    h += '<div class="panel col-12"><div class="sec-head"><div class="grow"><div class="sec-title">Reminders</div>' +
+      '<div class="sec-sub">Browser notifications while this dashboard is open</div></div>' +
+      '<button class="btn primary sm" id="rem-save">' + I("check", { size: 14 }) + ' Save reminders</button></div>';
     const perm = reminderStatus();
     if (perm === "denied") {
       h += '<div class="warn-banner">Notifications are off. Turn them on in your browser settings to get reminders.</div>';
     } else if (perm === "default") {
-      h += '<div class="btn-row"><button class="btn ghost sm" id="notif-enable">Enable notifications</button></div>';
+      h += '<div class="btn-row" style="margin-bottom:10px"><button class="btn ghost sm" id="notif-enable">' + I("bell", { size: 14 }) + ' Enable notifications</button></div>';
+    } else if (perm === "unsupported") {
+      h += '<div class="warn-banner">This browser does not support notifications.</div>';
     }
+    h += '<div class="grid" style="gap:0 var(--gap)"><div class="col-6">';
     h += reminderRowHTML("leaveForWorkEnabled", "Leave for work", "Heads-up before you need to head out",
       r, "leaveForWorkMinutesBefore", LEAVE_OPTS, "before");
     h += reminderRowHTML("shiftStartEnabled", "Shift starting", "A nudge right before you clock in",
       r, "shiftStartMinutesBefore", START_OPTS, "before");
     h += reminderRowHTML("logSalesEnabled", "Log your sales", "After your shift ends, log the day",
       r, "logSalesMinutesAfter", LOG_OPTS, "after");
-    h += '<div class="sched-card-title" style="margin-top:8px">Proactive</div>' +
-      '<div class="li-sub">Buddy speaks up on his own</div>';
-    h += simpleToggleRow("paydayRecapEnabled", "Payday recap",
-      "Payday morning: what the finished period paid you", r);
-    h += simpleToggleRow("buddyNudgeEnabled", "Weekly nudge",
-      "Monday morning: how last week went vs the week before", r);
-    h += '<div class="btn-row"><button class="btn primary" id="rem-save">Save reminders</button></div></div>';
-
-    h += '<div class="btn-row"><button class="btn" id="shift-add">＋ Add shift manually</button></div>';
+    h += '</div><div class="col-6"><div class="label" style="margin:10px 0 2px">Proactive</div>' +
+      '<div class="sec-sub">Buddy speaks up on his own</div>';
+    h += simpleToggleRow("paydayRecapEnabled", "Payday recap", "Payday morning: what the finished period paid you", r);
+    h += simpleToggleRow("buddyNudgeEnabled", "Weekly nudge", "Monday morning: how last week went vs the week before", r);
+    h += "</div></div></div></div>";
     return h;
   }
 
   function reminderRowHTML(toggleKey, title, sub, r, minKey, opts, suffix) {
     const on = !!r[toggleKey];
-    let h = '<div class="rem-row"><label class="switch-row"><span><b>' + esc(title) +
+    let h = '<div class="rem-row"><div class="switch-row"><span class="grow"><b>' + esc(title) +
       '</b><br><span class="li-sub">' + esc(sub) + "</span></span>" +
-      '<input type="checkbox" data-rem-toggle="' + toggleKey + '"' + (on ? " checked" : "") + "></label>";
-    if (on) {
-      h += '<div class="opt-pills">' + opts.map(o =>
-        '<button class="opt-pill' + (r[minKey] === o ? " selected" : "") +
-        '" data-rem-min="' + minKey + '" data-val="' + o + '">' +
-        (o === 0 && suffix === "after" ? "Right away" : o + "m " + suffix) + "</button>"
-      ).join("") + "</div>";
-    }
+      '<label class="switch"><input type="checkbox" data-rem-toggle="' + toggleKey + '"' + (on ? " checked" : "") + "><span></span></label></div>";
+    h += '<div class="opt-pills"' + (on ? "" : " hidden") + ' data-rem-pills="' + toggleKey + '">' + opts.map(o =>
+      '<button class="opt-pill' + (r[minKey] === o ? " active" : "") +
+      '" data-rem-min="' + minKey + '" data-val="' + o + '">' +
+      (o === 0 && suffix === "after" ? "Right away" : o + "m " + suffix) + "</button>"
+    ).join("") + "</div>";
     return h + "</div>";
   }
 
   function simpleToggleRow(key, title, sub, r) {
-    return '<div class="rem-row"><label class="switch-row"><span><b>' + esc(title) +
+    return '<div class="rem-row"><div class="switch-row"><span class="grow"><b>' + esc(title) +
       '</b><br><span class="li-sub">' + esc(sub) + "</span></span>" +
-      '<input type="checkbox" data-rem-toggle="' + key + '"' +
-      (r[key] ? " checked" : "") + "></label></div>";
+      '<label class="switch"><input type="checkbox" data-rem-toggle="' + key + '"' +
+      (r[key] ? " checked" : "") + "><span></span></label></div></div>";
   }
 
   function bindSettings(box) {
@@ -1062,35 +1069,34 @@ const ScheduleUI = (() => {
     if (syncBtn) syncBtn.onclick = () => syncCalendar(false);
     const notifBtn = box.querySelector("#notif-enable");
     if (notifBtn) notifBtn.onclick = async () => { await ensureNotificationPermission(); refresh(); };
+    box.querySelectorAll("[data-rem-toggle]").forEach(t => {
+      t.onchange = () => {
+        const pills = box.querySelector('[data-rem-pills="' + t.dataset.remToggle + '"]');
+        if (pills) pills.hidden = !t.checked;
+      };
+    });
     box.querySelectorAll("[data-rem-min]").forEach(pill => {
       pill.onclick = () => {
         const key = pill.dataset.remMin;
         box.querySelectorAll('[data-rem-min="' + key + '"]').forEach(p =>
-          p.classList.toggle("selected", p === pill));
+          p.classList.toggle("active", p === pill));
       };
     });
     const saveBtn = box.querySelector("#rem-save");
-    if (saveBtn) saveBtn.onclick = saveReminders;
-    const holOpen = box.querySelector("#hol-open");
-    if (holOpen) holOpen.onclick = () => {
-      const ed = box.querySelector("#hol-editor");
-      ed.hidden = !ed.hidden;
-      if (!ed.hidden) renderHolidayEditor(ed);
-    };
-    const addBtn = box.querySelector("#shift-add");
-    if (addBtn) addBtn.onclick = () => openShiftEditor(null);
+    if (saveBtn) saveBtn.onclick = () => saveReminders(box);
+    const hol = box.querySelector("#hol-editor");
+    if (hol) renderHolidayEditor(hol);
   }
 
-  async function saveReminders() {
-    const box = document.getElementById("sched-body");
-    const r = Object.assign({}, DEFAULT_REMINDERS);
+  async function saveReminders(box) {
+    const r = Object.assign({}, reminders());
     box.querySelectorAll("[data-rem-toggle]").forEach(t => { r[t.dataset.remToggle] = t.checked; });
-    box.querySelectorAll("[data-rem-min].selected").forEach(p => { r[p.dataset.remMin] = +p.dataset.val; });
+    box.querySelectorAll("[data-rem-min].active").forEach(p => { r[p.dataset.remMin] = +p.dataset.val; });
     try {
       await SyncEngine.queueWrite({ type: "updateProfile", updates: { reminders: r } });
       profile.reminders = r;
       if (await ensureNotificationPermission()) refreshReminders();
-      alert("Reminders saved.");
+      if (typeof window.toast === "function") window.toast("Reminders saved"); else alert("Reminders saved.");
       refresh();
     } catch (e) { alert("Couldn't save reminders."); }
   }
@@ -1101,24 +1107,21 @@ const ScheduleUI = (() => {
 
   function renderHolidayEditor(el) {
     const sorted = holidayDates.slice().sort();
-    let h = '<div class="sched-card-title">Add a date</div>' +
-      '<div class="li-sub">Open 11 AM–6 PM that day</div>' +
-      '<div class="crew-add"><input type="date" id="hol-date"> ' +
-      '<button class="btn primary sm" id="hol-add">＋ Add holiday</button></div>' +
-      '<div class="sched-card-title" style="margin-top:10px">Sunday-hours dates</div>' +
-      '<div class="li-sub">' + (sorted.length ? sorted.length + " date(s)" : "No holidays saved") + "</div>";
+    let h = '<div class="crew-add"><input type="date" id="hol-date"> ' +
+      '<button class="btn primary sm" id="hol-add">' + I("plus", { size: 14 }) + ' Add holiday</button></div>';
     if (!sorted.length) {
-      h += '<div class="li-sub">Certain holidays — like the Fourth of July — run Sunday hours ' +
+      h += '<div class="hint">Certain holidays — like the Fourth of July — run Sunday hours ' +
         "on a weekday. Add each date and the app treats it like a Sunday.</div>";
     }
+    h += '<div class="list">';
     sorted.forEach(dk => {
       const d = parseDayKey(dk);
-      h += '<div class="crew-row"><span>' +
-        d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) +
-        '<br><span class="li-sub">11 AM–6 PM</span></span>' +
-        '<button class="icon-btn danger" data-hol-remove="' + dk + '" title="Remove">🗑</button></div>';
+      h += '<div class="list-item"><div class="li-main">' +
+        esc(d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" })) +
+        '<div class="li-sub">11 AM–6 PM</div></div>' +
+        '<button class="icon-btn danger" data-hol-remove="' + dk + '" title="Remove" aria-label="Remove">' + I("trash") + "</button></div>";
     });
-    h += '<div class="li-sub" style="margin-top:8px">Sunday runs 11 AM–6 PM and every other day stays ' +
+    h += '</div><div class="hint">Sunday runs 11 AM–6 PM and every other day stays ' +
       "10 AM–9 PM — these dates just borrow the Sunday hours. Opening and closing pay follow automatically.</div>";
     el.innerHTML = h;
 
@@ -1128,7 +1131,7 @@ const ScheduleUI = (() => {
       const v = dateInput.value;
       const dup = v && holidayDates.includes(v);
       addBtn.disabled = !v || dup;
-      addBtn.innerHTML = dup ? "✓ Already saved" : "＋ Add holiday";
+      addBtn.innerHTML = dup ? I("check", { size: 14 }) + " Already saved" : I("plus", { size: 14 }) + " Add holiday";
     };
     dateInput.addEventListener("change", checkDup);
     checkDup();
@@ -1144,7 +1147,7 @@ const ScheduleUI = (() => {
 
   async function updateHolidays(next) {
     try {
-      await SyncEngine.queueWrite({ type: "updateProfile", updates: { holidayDates: next } });
+      await SyncEngine.queueWrite({ type: "setHolidayDates", dates: next });
       holidayDates = next;
       refresh();
     } catch (e) { alert("Couldn't save holidays."); }
@@ -1159,33 +1162,52 @@ const ScheduleUI = (() => {
     shifts = (Array.isArray(data.shifts) ? data.shifts : [])
       .slice().sort((a, b) => new Date(a.start) - new Date(b.start));
     profile = data.profile || {};
-    days = data.days || {};
-    holidayDates = Array.isArray(profile.holidayDates) ? profile.holidayDates : [];
+    days = indexDays(data.days);
+    table = PayEngine.tableForProfile(profile);
+    holidayDates = Array.isArray(data.holidayDates) ? data.holidayDates.slice()
+      : (Array.isArray(profile.holidayDates) ? profile.holidayDates.slice() : []);
     refresh();
+  }
+
+  function weekSummary() {
+    let hrs = 0, n = 0;
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekStart); d.setDate(d.getDate() + i);
+      const k = dayKeyOf(d);
+      shifts.filter(sh => shiftDayKey(sh) === k).forEach(sh => { hrs += shiftHours(sh); n++; });
+    }
+    return n + " shift" + (n === 1 ? "" : "s") + " · " + hrs.toFixed(1) + " hrs this week";
   }
 
   function refresh() {
     const box = document.getElementById("sched-body");
-    if (!box) return;
-    let h = '<div class="sched-toolbar">' +
-      '<button class="btn ghost sm" id="tb-sync">⟳ Sync now</button>' +
-      '<button class="btn ghost sm" id="tb-add">＋ Add shift</button>' +
-      '<button class="btn ghost sm" id="tb-rem">🔔 Reminders</button></div>';
-    h += weekStripHTML();
-    h += selectedDayHTML();
-    h += comingUpHTML();
-    h += settingsHTML();
-    box.innerHTML = h;
+    if (box) {
+      let h = '<div class="page-head"><div><h2>Schedule</h2><div class="page-sub">' + esc(lastSyncText()) + "</div></div>" +
+        '<div class="spacer"></div>' +
+        '<button class="btn ghost" id="tb-settings">' + I("gear") + " Workday settings</button>" +
+        '<button class="btn ghost" id="tb-sync"' + (syncing || !(profile.icsURL || "").trim() ? " disabled" : "") + ">" + I("refresh") + " " + (syncing ? "Syncing…" : "Sync now") + "</button>" +
+        '<button class="btn primary" id="tb-add">' + I("plus") + " Add shift</button></div>";
+      h += '<div class="grid">' +
+        '<div class="panel col-12">' + weekStripHTML() + '<div class="caption" style="margin-top:8px">' + esc(weekSummary()) + "</div></div>" +
+        '<div class="panel col-7" id="sched-day">' + selectedDayHTML() + "</div>" +
+        '<div class="panel col-5" id="sched-coming">' + comingUpHTML() + "</div></div>";
+      box.innerHTML = h;
+      bindSchedule(box);
+    }
+    if (settingsBox && document.body.contains(settingsBox)) {
+      settingsBox.innerHTML = settingsHTML();
+      bindSettings(settingsBox);
+    }
+    refreshReminders();
+  }
 
-    // Toolbar
+  function bindSchedule(box) {
     box.querySelector("#tb-sync").onclick = () => syncCalendar(false);
     box.querySelector("#tb-add").onclick = () => openShiftEditor(null);
-    box.querySelector("#tb-rem").onclick = () => {
-      const p = box.querySelector("#rem-save");
-      if (p) p.scrollIntoView({ behavior: "smooth", block: "center" });
-    };
+    box.querySelector("#tb-settings").onclick = () => { if (hooks.onOpenSettings) hooks.onOpenSettings(); };
+    const selAdd = box.querySelector("#sel-add");
+    if (selAdd) selAdd.onclick = () => openShiftEditor(null);
 
-    // Week strip
     box.querySelector("#wk-prev").onclick = () => {
       const d = parseDayKey(selectedDayKey); d.setDate(d.getDate() - 7);
       weekStart = startOfWeek(d); selectedDayKey = dayKeyOf(d); refresh();
@@ -1201,7 +1223,6 @@ const ScheduleUI = (() => {
       chip.onclick = () => { selectedDayKey = chip.dataset.day; refresh(); };
     });
 
-    // Shift cards (not tappable — pencil opens edit, crew opens sheet)
     box.querySelectorAll(".shift-card").forEach(card => {
       const id = card.dataset.shift;
       const sh = shifts.find(s => s.id === id);
@@ -1214,12 +1235,10 @@ const ScheduleUI = (() => {
     box.querySelectorAll(".shift-lunch").forEach(renderLunchEditor);
     box.querySelectorAll(".shift-crew").forEach(renderCrewEditor);
 
-    // View-day links
     box.querySelectorAll("[data-view-day]").forEach(b => {
       b.onclick = () => { if (hooks.onViewDay) hooks.onViewDay(b.dataset.viewDay); };
     });
 
-    // Coming-up jump (stays on Schedule)
     box.querySelectorAll("[data-jump-week]").forEach(btn => {
       btn.onclick = () => {
         const d = parseDayKey(btn.dataset.jumpWeek);
@@ -1228,27 +1247,33 @@ const ScheduleUI = (() => {
         const jumpId = btn.dataset.shift;
         refresh();
         setTimeout(() => {
-          const el = box.querySelector('[data-shift="' + CSS.escape(jumpId) + '"]');
-          if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+          const el = box.querySelector('.shift-card[data-shift="' + CSS.escape(jumpId) + '"]');
+          if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1600); }
         }, 50);
       };
     });
-
-    bindSettings(box);
-    refreshReminders();
   }
 
   async function open() {
     const box = document.getElementById("sched-body");
-    if (!box) return;
-    box.innerHTML = spinner("Loading schedule…");
+    if (box && !box.children.length) box.innerHTML = spinner("Loading schedule…");
     try { await reload(); }
-    catch (e) { box.innerHTML = '<div class="panel">Couldn\'t load schedule.</div>'; }
+    catch (e) { if (box) box.innerHTML = '<div class="panel error-box">Couldn\'t load schedule: ' + esc(e.message || "") + "</div>"; }
+  }
+
+  /// Settings > Workday: calendar link, holidays, reminders.
+  async function renderSettings(el) {
+    settingsBox = el;
+    el.innerHTML = spinner("Loading workday settings…");
+    try { await reload(); }
+    catch (e) { el.innerHTML = '<div class="panel error-box">Couldn\'t load: ' + esc(e.message || "") + "</div>"; }
   }
 
   return {
     open,
     refresh,
+    reload,
+    renderSettings,
     parseICS,
     mergeShifts,
     normalizeICSURL,
@@ -1259,5 +1284,6 @@ const ScheduleUI = (() => {
     isClosingShift,
     computeReminders,
     set onViewDay(fn) { hooks.onViewDay = fn; },
+    set onOpenSettings(fn) { hooks.onOpenSettings = fn; },
   };
 })();
