@@ -135,7 +135,7 @@ APP_BUNDLE_ID = _read_secret("APPLE_APP_BUNDLE_ID", ".apple_app_id")
 # reboot. Unlink (/api/pair/revoke) and /logout clear it and re-save, so a
 # wiped login can never be resurrected by a restart.
 SESSIONS: dict[str, dict] = {}
-DASHBOARD_VERSION = "2.0.4"
+DASHBOARD_VERSION = "2.0.5"
 SESSIONS_FILE = os.path.join(BASE_DIR, ".sessions.json")
 _rpc_id = 0
 
@@ -783,6 +783,7 @@ STATIC_FILES = {
     "/schedule.js": ("schedule.js", "application/javascript; charset=utf-8"),
     "/journal.js": ("journal.js", "application/javascript; charset=utf-8"),
     "/coworkers.js": ("coworkers.js", "application/javascript; charset=utf-8"),
+    "/heic2any.min.js": ("heic2any.min.js", "application/javascript; charset=utf-8"),
     "/goals.js": ("goals.js", "application/javascript; charset=utf-8"),
     "/microcharm.js": ("microcharm.js", "application/javascript; charset=utf-8"),
     "/profile.js": ("profile.js", "application/javascript; charset=utf-8"),

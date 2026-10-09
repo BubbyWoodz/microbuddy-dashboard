@@ -466,6 +466,44 @@ const AppDataSanitizer = (() => {
         c.id = fresh;
       }
     });
+    // CoworkerContact: optional Strings/UUIDs/Dates must decode or be absent,
+    // and photos must be bare base64 (Swift Data), never a data: URL.
+    const isoOrNoon = v => {
+      if (validISO(v)) return v;
+      const m = /^(\d{4}-\d{2}-\d{2})$/.exec(String(v || ""));
+      return m ? zonedISO(m[1], tz, 12, 0) : null;
+    };
+    (Array.isArray(data.contacts) ? data.contacts : []).forEach(c => {
+      if (!c || typeof c !== "object") return;
+      ["firstName", "lastName", "organization", "phone", "email", "notes", "namePrefix", "middleName",
+        "nameSuffix", "nickname", "jobTitle", "department"].forEach(k => {
+        if (c[k] != null && typeof c[k] !== "string") c[k] = String(c[k]);
+      });
+      ["photoData", "linkedPhotoData"].forEach(k => {
+        if (c[k] == null || c[k] === "") { delete c[k]; return; }
+        if (typeof c[k] !== "string") { delete c[k]; return; }
+        c[k] = c[k].replace(/^data:[^,]*,/, "").replace(/\s+/g, "");
+      });
+      if (c.linkedUserID == null || c.linkedUserID === "") delete c.linkedUserID;
+      if (c.createdAt != null && !validISO(c.createdAt)) c.createdAt = isoOrNoon(c.createdAt) || SB.isoSeconds(new Date());
+      if (c.birthday != null) { const b = isoOrNoon(c.birthday); if (b) c.birthday = b; else delete c.birthday; }
+      if (c.isFavorite != null) c.isFavorite = !!c.isFavorite;
+      if (c.favoriteRank != null) c.favoriteRank = Math.round(Number(c.favoriteRank) || 0);
+      const fixIds = arr => arr.forEach(x => { if (x && typeof x === "object" && !UUID_RE.test(String(x.id || ""))) x.id = uuid(); });
+      ["phones", "emails", "urls", "relatedNames", "addresses", "socials", "customDates", "shiftNotes"].forEach(k => {
+        if (c[k] == null) return;
+        if (!Array.isArray(c[k])) { c[k] = []; return; }
+        c[k] = c[k].filter(x => x && typeof x === "object");
+        fixIds(c[k]);
+      });
+      (c.customDates || []).forEach(d => { d.label = String(d.label || ""); d.date = isoOrNoon(d.date) || SB.isoSeconds(new Date()); });
+      (c.shiftNotes || []).forEach(n => {
+        n.text = String(n.text == null ? "" : n.text);
+        n.date = isoOrNoon(n.date) || SB.isoSeconds(new Date());
+        if (n.shiftLabel == null) delete n.shiftLabel;
+      });
+      if (c.dismissedSuggestions != null && !Array.isArray(c.dismissedSuggestions)) c.dismissedSuggestions = [];
+    });
     if (Object.keys(remap).length) {
       const walk = v => {
         if (typeof v === "string") return Object.prototype.hasOwnProperty.call(remap, v) ? remap[v] : v;

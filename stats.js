@@ -605,6 +605,11 @@ const StatsUI = (() => {
         : b.partnerShifts - a.partnerShifts);
   }
 
+  function crewAvatar(name, size) {
+    if (window.CoworkersUI && CoworkersUI.avatarForName) return CoworkersUI.avatarForName(name, size);
+    return `<span class="avatar initials" style="width:${size}px;height:${size}px">${esc(initials(name))}</span>`;
+  }
+
   function initials(name) {
     const words = String(name).split(" ").filter(Boolean);
     return words.slice(0, 2).map(w => w[0]).join("").toUpperCase();
@@ -899,7 +904,7 @@ const StatsUI = (() => {
       `<div class="sec-sub">On the roster but under half your shift — not counted in Everyone</div></div></div>`;
     if (!brief.length) html += `<div class="empty">No brief overlaps.</div>`;
     for (const s of brief) {
-      html += `<div class="list-item"><span class="avatar placeholder" style="width:34px;height:34px;font-size:12px;font-weight:800">${esc(initials(s.name))}</span>` +
+      html += `<div class="list-item">${crewAvatar(s.name, 34)}` +
         `<div class="li-main">${esc(s.name)}<div class="li-sub">${hoursText(s.briefOverlapHours)} total overlap</div></div>` +
         `<div class="li-val">${s.briefShifts}<div class="li-sub">${s.briefShifts === 1 ? "shift" : "shifts"}</div></div></div>`;
     }
@@ -920,7 +925,7 @@ const StatsUI = (() => {
     if (stat.loggedDaysCount > 0) parts.push(`avg ${money(stat.avgRevenue)} sold`);
     const detail = parts.length ? parts.join(" · ") : "hours not recorded yet";
     return `<div class="list-item"><span class="muted" style="width:20px;text-align:right;font-weight:800;font-size:12px">${rank}</span>` +
-      `<span class="avatar initials" style="width:36px;height:36px;font-size:13px">${esc(initials(stat.name))}</span>` +
+      `${crewAvatar(stat.name, 36)}` +
       `<div class="li-main">${esc(stat.name)}<div class="li-sub">${esc(detail)}</div></div>` +
       `<div class="li-val" style="font-size:17px">${stat.partnerShifts}<div class="li-sub">${stat.partnerShifts === 1 ? "shift" : "shifts"}</div></div></div>`;
   }

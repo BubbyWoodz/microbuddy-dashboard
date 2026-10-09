@@ -398,7 +398,7 @@ const ScheduleUI = (() => {
         const obj = typeof c === "string" ? { name: nm } : c;
         const ov = overlapSummary(sh, obj);
         h += '<button class="crew-row" data-crew-open>' +
-          '<span class="avatar initials">' + esc(initials(nm)) + "</span>" +
+          crewAvatar(nm, 34) +
           '<span class="crew-name">' + esc(nm) + "</span>" +
           (ov ? '<span class="li-sub">' + esc(ov) + "</span>" : "") +
           "</button>";
@@ -407,6 +407,12 @@ const ScheduleUI = (() => {
       if (crew.length > 6) h += '<button class="link-btn" data-crew-open style="margin-top:8px">+' + (crew.length - 6) + " more</button>";
     }
     return h + "</div>";
+  }
+
+  /// Coworker photo when the name matches a saved coworker, else initials.
+  function crewAvatar(name, size) {
+    if (window.CoworkersUI && CoworkersUI.avatarForName) return CoworkersUI.avatarForName(name, size);
+    return '<span class="avatar">' + esc(initials(name)) + "</span>";
   }
 
   function initials(name) {
@@ -455,7 +461,7 @@ const ScheduleUI = (() => {
         const sub = (obj.start || obj.end)
           ? esc((obj.start || "") + (obj.end ? "–" + obj.end : "") + (ov ? " · " + ov + " of your shift" : ""))
           : (ov ? esc(ov + " of your shift") : "");
-        return '<div class="crew-row"><span class="avatar">' + esc(initials(nm)) + "</span>" +
+        return '<div class="crew-row">' + crewAvatar(nm, 34) +
           '<span><b>' + esc(nm) + "</b>" + (sub ? '<br><span class="li-sub">' + sub + "</span>" : "") + "</span>" +
           '<button class="icon-btn danger" data-cw-del="' + i + '" aria-label="Remove">' + I("minus") + '</button></div>';
       }).join("");
@@ -507,7 +513,7 @@ const ScheduleUI = (() => {
       .slice(0, 4);
     r.innerHTML = matches.map(c =>
       '<button class="crew-result" data-cw-pick="' + esc(c.name) + '">' +
-      '<span class="avatar">' + esc(initials(c.name)) + "</span>" +
+      crewAvatar(c.name, 34) +
       '<span>' + esc(c.name) + (c.phone ? '<br><span class="li-sub">' + esc(c.phone) + "</span>" : "") + "</span>" +
       '<span class="navy">' + I("plus") + '</span></button>'
     ).join("");
@@ -980,6 +986,7 @@ const ScheduleUI = (() => {
   const START_OPTS = [5, 10, 15, 30];
   const LOG_OPTS = [0, 10, 30, 60];
   let settingsBox = null;
+  let settingsSection = "schedule"; // Settings > Workday > Schedule | Reminders
 
   function lastSyncText() {
     if (!(profile.icsURL || "").trim()) return "No calendar linked yet";
@@ -989,8 +996,15 @@ const ScheduleUI = (() => {
       " at " + fmtTime(d) + " · " + shifts.length + " shifts";
   }
 
+  /// One-line summaries for the Workday hub rows.
+  function remindersSummary() {
+    const r = reminders();
+    const n = ["leaveForWorkEnabled", "shiftStartEnabled", "logSalesEnabled", "paydayRecapEnabled", "buddyNudgeEnabled"].filter(k => r[k]).length;
+    return n ? n + " reminder" + (n === 1 ? "" : "s") + " on" : "All reminders off";
+  }
+
   function settingsHTML() {
-    const r = reminders(), icsURL = profile.icsURL || "";
+    const icsURL = profile.icsURL || "";
     let h = '<div class="grid">';
     h += '<div class="panel col-6"><div class="sec-head"><div class="grow"><div class="sec-title">UKG calendar</div>' +
       '<div class="sec-sub">Paste your iCal subscription link</div></div></div>' +
@@ -1009,6 +1023,13 @@ const ScheduleUI = (() => {
       '<div class="sec-sub">' + (nHol ? nHol + " date" + (nHol === 1 ? "" : "s") + " with Sunday hours" : "Weekdays that open 11 AM–6 PM") +
       '</div></div></div><div id="hol-editor"></div></div>';
 
+    h += "</div>";
+    return h;
+  }
+
+  function remindersHTML() {
+    const r = reminders();
+    let h = '<div class="grid">';
     h += '<div class="panel col-12"><div class="sec-head"><div class="grow"><div class="sec-title">Reminders</div>' +
       '<div class="sec-sub">Browser notifications while this dashboard is open</div></div>' +
       '<button class="btn primary sm" id="rem-save">' + I("check", { size: 14 }) + ' Save reminders</button></div>';
@@ -1195,7 +1216,7 @@ const ScheduleUI = (() => {
       bindSchedule(box);
     }
     if (settingsBox && document.body.contains(settingsBox)) {
-      settingsBox.innerHTML = settingsHTML();
+      settingsBox.innerHTML = settingsSection === "reminders" ? remindersHTML() : settingsHTML();
       bindSettings(settingsBox);
     }
     refreshReminders();
@@ -1262,8 +1283,9 @@ const ScheduleUI = (() => {
   }
 
   /// Settings > Workday: calendar link, holidays, reminders.
-  async function renderSettings(el) {
+  async function renderSettings(el, section) {
     settingsBox = el;
+    settingsSection = section === "reminders" ? "reminders" : "schedule";
     el.innerHTML = spinner("Loading workday settings…");
     try { await reload(); }
     catch (e) { el.innerHTML = '<div class="panel error-box">Couldn\'t load: ' + esc(e.message || "") + "</div>"; }
@@ -1274,6 +1296,8 @@ const ScheduleUI = (() => {
     refresh,
     reload,
     renderSettings,
+    lastSyncText: () => lastSyncText(),
+    remindersSummary: () => remindersSummary(),
     parseICS,
     mergeShifts,
     normalizeICSURL,
