@@ -423,14 +423,14 @@ table.tbl tbody tr.selected td { background: color-mix(in srgb, var(--accent) 12
 .flag-plan { background: var(--blue-dim); color: var(--navy-bright); }
 
 /* ================= Home ================= */
-.home-greet { display: flex; align-items: center; gap: 18px; padding: 2px 2px 6px; }
-.home-greet .hi { font-size: 15px; font-weight: 600; color: var(--text-secondary); }
-.home-greet .name { font-family: var(--font-display); font-size: 38px; font-weight: 800; letter-spacing: -.6px; color: var(--text-primary); line-height: 1.1; margin: 2px 0 8px; }
-.home-greet .pills { display: flex; gap: 8px; flex-wrap: wrap; }
-.home-greet .avatar { width: 64px; height: 64px; border: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); font-size: 22px; cursor: pointer; }
-.home-greet .quick { margin-left: auto; display: flex; gap: var(--gap); }
-.home-greet .avatar-btn { width: 68px; height: 68px; border: 0; background: transparent; }
-.home-greet .avatar-btn .avatar { width: 64px !important; height: 64px !important; }
+.home-greet { display: flex; align-items: center; gap: 24px; padding: 20px 24px; }
+.home-greet .greet-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
+.home-greet .hi { font-size: 15px; font-weight: 600; line-height: 1.2; color: var(--text-secondary); }
+.home-greet .name { font-family: var(--font-display); font-size: 36px; font-weight: 800; letter-spacing: -.6px; color: var(--text-primary); line-height: 1.1; margin: 4px 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.home-greet .pills { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.home-greet .pills .chip { height: 26px; display: inline-flex; align-items: center; gap: 6px; padding: 0 11px; line-height: 1; font-size: 12.5px; }
+.home-greet .pills .chip svg { flex: none; }
+.home-greet .quick { margin-left: auto; flex: none; display: flex; align-items: stretch; gap: 12px; }
 .quick-stat { min-width: 160px; padding: 12px 16px; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: left;
   background: var(--tile-bg); border: var(--tile-border, 0); border-radius: var(--radius-md); color: var(--text-primary); box-shadow: none; }
 .quick-stat:hover { box-shadow: inset 0 0 0 1.5px var(--accent); }
@@ -890,11 +890,6 @@ table.tbl tbody tr.selected td { background: color-mix(in srgb, var(--accent) 12
 .input-prefix > input { flex: 1; border-top-left-radius: 0 !important; border-bottom-left-radius: 0 !important; }
 .avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; }
 #sale-modal, .modal-overlay { z-index: 1500; }
-.header-greet { display: flex; flex-direction: column; min-width: 0; }
-.header-greet .hg-date { font-size: 12.5px; color: var(--text-secondary); white-space: nowrap; }
-.header-greet .hg-hi { font-size: 14px; font-weight: 700; color: var(--text-primary); white-space: nowrap; }
-.brand-divider { width: 1px; align-self: stretch; background: var(--hairline); margin: 4px 0; }
-@media (max-width: 1100px) { .header-greet, .brand-divider { display: none; } }
 
 /* Row-style buttons: no native button chrome. */
 button.day-row, button.coming-row, button.view-day-row, button.rank, button.settings-row,

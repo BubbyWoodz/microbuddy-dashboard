@@ -5,7 +5,7 @@
 FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="Micro Buddy Dashboard" \
-      org.opencontainers.image.version="2.0.0"
+      org.opencontainers.image.version="2.0.1"
 
 ENV PYTHONUNBUFFERED=1 \
     SUPABASE_URL=https://tgarraczeevyrjfxzkkf.supabase.co
