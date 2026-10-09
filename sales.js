@@ -166,13 +166,18 @@ const SalesUI = (() => {
     const k = keyOf(d), dt = localDate(k);
     const com = PayEngine.dayCommission(d, table), rt = returnsTotal(d);
     const off = (Number(d.scheduledHours) || 0) === 0;
-    const meta = `${soldShort(dayRevenue(d))} sold · ${num(itemsSold(d))} items · ${off ? "Day off" : PayEngine.workedHours(d).toFixed(1) + "h"}`;
+    const nt = (d.tickets || []).length;
+    // Each piece is an unbreakable chunk; lines may only wrap between chunks
+    // (after a " · "), never mid-word and never with an ellipsis.
+    const parts = [`${soldShort(dayRevenue(d))} sold`, `${num(itemsSold(d))} items`,
+      off ? "Day off" : PayEngine.workedHours(d).toFixed(1) + "h", `${nt} ticket${nt === 1 ? "" : "s"}`];
+    const meta = parts.map((p, i) => `<span class="dc-seg">${esc(p)}${i < parts.length - 1 ? " \u00B7" : ""}</span>`).join(" ");
     return `<button class="day-card" data-open="${esc(k)}" title="Open ${esc(fmtLong(k))}">` +
       `<span class="date-badge"><span class="m">${esc(dt.toLocaleDateString("en-US", { month: "short" }).toUpperCase())}</span><span class="d">${dt.getDate()}</span></span>` +
       `<span class="dc-body"><span class="dc-top"><span class="dc-dow">${esc(dt.toLocaleDateString("en-US", { weekday: "long" }))}</span>` +
       `<span class="dc-com ${com < -0.005 ? "red" : "money"}">${money(com)}</span></span>` +
-      `<span class="dc-meta">${esc(meta)}</span>` +
-      (rt > 0 ? `<span class="dc-ret">${I("return", { size: 12 })}-${esc(compact(rt))} returns</span>` : "") +
+      `<span class="dc-meta">${meta}</span>` +
+      (rt > 0 ? `<span class="dc-ret">${I("return", { size: 12 })}<span>-${esc(money(rt))} returns</span></span>` : "") +
       `</span></button>`;
   }
 
