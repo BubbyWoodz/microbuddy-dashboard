@@ -1,6 +1,6 @@
 "use strict";
 /* ============ buddy.js — Buddy tab: synced chat with the server AI ============
- * Architecture (per Christian):
+ * Architecture:
  *   - Conversations are DATA: they sync. Stored in IndexedDB (offline) and
  *     on the server per Apple user (canonical). Full sync on login via
  *     SyncEngine.syncChat(), incremental after.
@@ -222,6 +222,24 @@ const BuddyUI = (() => {
     return div;
   }
 
+  /// Who Buddy is talking to: the signed-in user's own profile row + the
+  /// department/nickname from their backup blob. Nothing is hardcoded.
+  async function userContext() {
+    const ctx = {};
+    try {
+      const p = await SB.getProfile();
+      if (p) { ctx.first_name = p.firstName; ctx.last_name = p.lastName; ctx.buddy_name = p.buddyName; }
+    } catch (e) {}
+    try {
+      const b = await SyncEngine.getLocalBackup();
+      const prof = (b && b.data && b.data.profile) || {};
+      if (prof.nickname) ctx.nickname = String(prof.nickname);
+      if (prof.department) ctx.department = String(prof.department);
+      if (!ctx.first_name && prof.name) ctx.first_name = String(prof.name).split(/\s+/)[0];
+    } catch (e) {}
+    return ctx;
+  }
+
   async function send(text) {
     if (!navigator.onLine) {
       addMessageEl("assistant", "You're offline — Buddy needs a connection to your AI server to reply. Your history is still here.", Date.now());
@@ -242,7 +260,7 @@ const BuddyUI = (() => {
       const res = await fetch("/api/ai-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sid, messages: [{ role: "user", content: text }] }),
+        body: JSON.stringify({ session_id: sid, messages: [{ role: "user", content: text }], user_context: await userContext() }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || ("request failed: " + res.status));
