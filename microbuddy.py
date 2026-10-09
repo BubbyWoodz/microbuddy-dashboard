@@ -117,8 +117,7 @@ APP_BUNDLE_ID = _read_secret("APPLE_APP_BUNDLE_ID", ".apple_app_id")
 # reboot. Unlink (/api/pair/revoke) and /logout clear it and re-save, so a
 # wiped login can never be resurrected by a restart.
 SESSIONS: dict[str, dict] = {}
-DASHBOARD_VERSION = "1.1.8"
-_LAST_MINT_ERROR = None
+DASHBOARD_VERSION = "1.1.9"
 SESSIONS_FILE = os.path.join(BASE_DIR, ".sessions.json")
 _rpc_id = 0
 
@@ -410,9 +409,11 @@ def _supabase_key() -> str:
     return SUPABASE_KEY or TOKEN
 
 
-def _supabase_rest(method: str, path: str, query: str = "",
+def _supabase_service_rest(method: str, path: str, query: str = "",
                    body: "bytes | None" = None,
                    extra_headers: "dict | None" = None) -> tuple:
+    """Service-key Supabase REST (server-side ops). Distinct from the
+    user-scoped _supabase_rest above which uses the caller's session."""
     key = _supabase_key()
     if not key:
         raise RuntimeError("no Supabase key configured")
@@ -444,7 +445,7 @@ def get_shared_theme(sub: str) -> "str | None":
         return cached[1]
     theme = None
     try:
-        _status, data = _supabase_rest(
+        _status, data = _supabase_service_rest(
             "GET", "/user_preferences",
             f"id=eq.{quote(sub, safe='')}&select=theme")
         rows = json.loads(data or "[]")
@@ -469,7 +470,7 @@ def set_shared_theme(sub: str, theme: str) -> bool:
             "theme": theme,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).encode()
-        _supabase_rest("POST", "/user_preferences", "",
+        _supabase_service_rest("POST", "/user_preferences", "",
                        body, {"Prefer": "resolution=merge-duplicates"})
         _shared_theme_cache[sub] = (time.time(), theme)
         return True
@@ -986,7 +987,6 @@ class Handler(BaseHTTPRequestHandler):
                 "auth_mode": "pairing",
                 "app_configured": bool(APP_BUNDLE_ID),
                 "version": DASHBOARD_VERSION,
-                "mint_debug": _LAST_MINT_ERROR,
             }).encode())
             return
 
@@ -1306,9 +1306,6 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 mcp_token = _mint_mcp_token(user_id, access_token)
             except Exception as e:
-                global _LAST_MINT_ERROR
-                import traceback
-                _LAST_MINT_ERROR = traceback.format_exc()[-2000:]
                 self._send(500, json.dumps(
                     {"error": f"couldn't set up data access: {e}"}).encode())
                 return
