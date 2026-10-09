@@ -977,10 +977,11 @@ button.crew-row { color: var(--text-primary); font: inherit; text-align: left; w
 .month-head:first-child { margin-top: 4px; }
 .month-head .canvas-title { margin: 0; }
 .month-head .mh-sub { font-size: 13px; color: var(--text-on-canvas-2); }
-.day-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; align-items: stretch; }
+.day-cards { --day-card-min: 230px; display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--day-card-min), 1fr)); gap: 12px; align-items: stretch; }
+[data-theme="terminal"] .day-cards { --day-card-min: 268px; }
 .day-card {
-  display: flex; align-items: center; gap: 14px; width: 100%; height: 100%; text-align: left; cursor: pointer;
-  padding: 12px 14px; min-height: 76px;
+  display: flex; align-items: center; gap: 12px; width: 100%; height: 100%; text-align: left; cursor: pointer;
+  padding: 12px 12px; min-height: 76px;
   background: var(--panel-bg); border: var(--panel-border); border-radius: var(--radius-md, 14px);
   box-shadow: var(--panel-shadow); color: var(--text-primary);
   -webkit-backdrop-filter: var(--panel-blur); backdrop-filter: var(--panel-blur);
@@ -988,7 +989,7 @@ button.crew-row { color: var(--text-primary); font: inherit; text-align: left; w
 }
 .day-card:hover { transform: translateY(-1px); box-shadow: var(--panel-shadow), inset 0 0 0 1.5px var(--accent); }
 .day-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.day-card .date-badge { flex: none; width: 40px; }
+.day-card .date-badge { flex: none; width: 36px; }
 .day-card .date-badge .d { font-size: 24px; }
 /* Tile text never truncates: no ellipsis, no overflow clipping. */
 .day-card .dc-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }

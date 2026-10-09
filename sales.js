@@ -159,18 +159,29 @@ const SalesUI = (() => {
   }
 
   // ---- Every day you logged: month groups of compact day cards ----
-  // Whole dollars under $1k so the card meta line stays on one line.
-  const soldShort = n => Math.abs(Number(n) || 0) >= 1000 ? compact(n) : (n < 0 ? "-$" : "$") + Math.round(Math.abs(Number(n) || 0)).toLocaleString("en-US");
+  // iOS Double.currency: whole dollars when the value is whole and >= $100,
+  // otherwise two decimals. iOS compactCurrency: "$X.Yk" from $1,000 up.
+  function iosCurrency(n) {
+    const v = Number(n) || 0;
+    const whole = Math.round(v) === v && Math.abs(v) >= 100;
+    return v.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: whole ? 0 : 2, maximumFractionDigits: whole ? 0 : 2 });
+  }
+  function iosCompactCurrency(n) {
+    const v = Number(n) || 0;
+    if (Math.abs(v) >= 1000) return (v < 0 ? "-$" : "$") + (Math.abs(v) / 1000).toFixed(1) + "k";
+    return iosCurrency(v);
+  }
   function dayCardHTML(d) {
     const { table } = state.data;
     const k = keyOf(d), dt = localDate(k);
     const com = PayEngine.dayCommission(d, table), rt = returnsTotal(d);
     const off = (Number(d.scheduledHours) || 0) === 0;
-    const nt = (d.tickets || []).length;
+    // Same text as the iPhone's SalesView day row:
+    //   "<sold> sold · <N> items · <h.h>h"  (or "Day off" in place of hours)
     // Each piece is an unbreakable chunk; lines may only wrap between chunks
     // (after a " · "), never mid-word and never with an ellipsis.
-    const parts = [`${soldShort(dayRevenue(d))} sold`, `${num(itemsSold(d))} items`,
-      off ? "Day off" : PayEngine.workedHours(d).toFixed(1) + "h", `${nt} ticket${nt === 1 ? "" : "s"}`];
+    const parts = [`${iosCompactCurrency(dayRevenue(d))} sold`, `${itemsSold(d)} items`,
+      off ? "Day off" : PayEngine.workedHours(d).toFixed(1) + "h"];
     const meta = parts.map((p, i) => `<span class="dc-seg">${esc(p)}${i < parts.length - 1 ? " \u00B7" : ""}</span>`).join(" ");
     return `<button class="day-card" data-open="${esc(k)}" title="Open ${esc(fmtLong(k))}">` +
       `<span class="date-badge"><span class="m">${esc(dt.toLocaleDateString("en-US", { month: "short" }).toUpperCase())}</span><span class="d">${dt.getDate()}</span></span>` +
@@ -281,7 +292,7 @@ const SalesUI = (() => {
 
   function paint() {
     if (!host) return;
-    host.innerHTML = `<div class="page-head"><div><h2>Sales</h2><div class="page-sub">${esc(fmtLong(localKey()))}</div></div></div>` +
+    host.innerHTML = `<div class="page-head"><div><h2>Sales</h2></div></div>` +
       `<div class="grid sales-top"><div class="col-6">${todayHTML()}</div><div class="col-6">${searchHTML()}</div></div>` +
       `<div id="sales-main">${isSearching() ? resultsHTML() : daysHTML()}</div>`;
     bind();
