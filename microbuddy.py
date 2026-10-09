@@ -117,7 +117,7 @@ APP_BUNDLE_ID = _read_secret("APPLE_APP_BUNDLE_ID", ".apple_app_id")
 # reboot. Unlink (/api/pair/revoke) and /logout clear it and re-save, so a
 # wiped login can never be resurrected by a restart.
 SESSIONS: dict[str, dict] = {}
-DASHBOARD_VERSION = "1.1.10"
+DASHBOARD_VERSION = "1.1.11"
 SESSIONS_FILE = os.path.join(BASE_DIR, ".sessions.json")
 _rpc_id = 0
 
