@@ -70,6 +70,7 @@ import os
 import re
 import secrets
 import time
+import threading
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta, timezone
@@ -135,12 +136,71 @@ APP_BUNDLE_ID = _read_secret("APPLE_APP_BUNDLE_ID", ".apple_app_id")
 # reboot. Unlink (/api/pair/revoke) and /logout clear it and re-save, so a
 # wiped login can never be resurrected by a restart.
 SESSIONS: dict[str, dict] = {}
-DASHBOARD_VERSION = "2.0.6"
-SESSIONS_FILE = os.path.join(BASE_DIR, ".sessions.json")
+DASHBOARD_VERSION = "2.0.7"
+# Server state lives on the mounted users volume (/app/users), NOT in the
+# image's /app: an app update replaces the container, and anything outside a
+# volume (the old /app/.sessions.json, /app/.widget_token) vanished with it,
+# which forced a QR re-pair after every update.
+SERVER_DIR = os.path.join(USERS_DIR, "_server")
+SESSIONS_FILE = os.path.join(SERVER_DIR, "sessions.json")
+WIDGET_TOKEN_FILE = os.path.join(SERVER_DIR, "widget_token")
+WIDGET_OWNER_FILE = os.path.join(SERVER_DIR, "widget_owner")
+_LEGACY_FILES = {
+    os.path.join(BASE_DIR, ".sessions.json"): SESSIONS_FILE,
+    os.path.join(BASE_DIR, ".widget_token"): WIDGET_TOKEN_FILE,
+    os.path.join(BASE_DIR, ".widget_token_owner"): WIDGET_OWNER_FILE,
+}
 _rpc_id = 0
+_SESSIONS_LOCK = threading.Lock()
+
+
+def _ensure_server_dir() -> None:
+    os.makedirs(SERVER_DIR, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(SERVER_DIR, 0o700)
+    except OSError:
+        pass
+
+
+def _write_private(path: str, text: str) -> None:
+    """Atomic 0600 write (temp file in the same dir, then rename)."""
+    _ensure_server_dir()
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def _remove_quiet(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _migrate_legacy_state() -> None:
+    """One-time move of pre-2.0.7 state files onto the volume."""
+    try:
+        _ensure_server_dir()
+    except OSError as e:
+        print(f"[session] warning: can't create {SERVER_DIR}: {e}", flush=True)
+        return
+    for old, new in _LEGACY_FILES.items():
+        if os.path.exists(old) and not os.path.exists(new):
+            try:
+                with open(old) as f:
+                    _write_private(new, f.read())
+                _remove_quiet(old)
+                print(f"[session] migrated {os.path.basename(old)} -> {new}", flush=True)
+            except Exception as e:
+                print(f"[session] warning: couldn't migrate {old}: {e}", flush=True)
 
 
 def _load_sessions() -> None:
+    _migrate_legacy_state()
     try:
         with open(SESSIONS_FILE) as f:
             data = json.load(f)
@@ -154,11 +214,8 @@ def _load_sessions() -> None:
 
 def _save_sessions() -> None:
     try:
-        tmp = SESSIONS_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(dict(SESSIONS), f)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, SESSIONS_FILE)
+        with _SESSIONS_LOCK:
+            _write_private(SESSIONS_FILE, json.dumps(dict(SESSIONS)))
     except Exception as e:
         print(f"[session] warning: couldn't persist sessions: {e}", flush=True)
 
@@ -252,27 +309,93 @@ def _pay_period_containing(day: "_dt.date"):
     return payday - _dt.timedelta(days=14), payday - _dt.timedelta(days=1)
 
 
-def _mint_mcp_token(user_id: str, access_token: str) -> str:
-    """Mint a per-user MCP token for this dashboard pairing.
+DASHBOARD_LABEL = "dashboard"
 
-    Uses the create_mcp_token RPC — exactly like the phone app's Profile ->
-    MCP Server screen. Direct INSERTs into mcp_tokens are blocked by RLS;
-    only the RPC may create tokens. Old auto-minted 'dashboard' tokens for
-    this user are cleaned up first (direct DELETE is allowed).
-    Returns the raw token (only known at mint time; only the hash is stored).
+
+def _token_hash(raw: str) -> str:
+    """Same hash create_mcp_token stores (sha256 hex of the raw token)."""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _mint_dashboard_link(user_id: str, access_token: str) -> dict:
+    """Create this dashboard's link for a user: one mcp_tokens row
+    (label='dashboard') per paired browser. That row is the single source
+    of truth for "linked": the phone lists these rows, deleting one unlinks
+    that dashboard, and the dashboard signs out when its row is gone.
+
+    Uses the create_mcp_token RPC (direct INSERTs are blocked by RLS).
+    Other dashboards' rows are left alone, so one account can link several
+    servers. Returns {"token", "token_hash", "link_id"}.
     """
-    # Clean up previous dashboard tokens for this user.
-    try:
-        _supabase_rest("DELETE", "mcp_tokens", access_token,
-                       query=f"?user_id=eq.{user_id}&label=eq.dashboard")
-    except Exception as e:
-        print(f"[pair] warning: couldn't clean old dashboard tokens: {e}", flush=True)
     token = _supabase_rest("POST", "rpc/create_mcp_token", access_token,
-                           body={"p_label": "dashboard"},
-                           prefer=None)
+                           body={"p_label": DASHBOARD_LABEL}, prefer=None)
     if not token or not isinstance(token, str):
         raise ValueError("create_mcp_token returned no token")
-    return token
+    th = _token_hash(token)
+    rows = _supabase_rest("GET", "mcp_tokens", access_token, prefer=None,
+                          query=f"?select=id&token_hash=eq.{th}&user_id=eq.{user_id}")
+    link_id = str(rows[0]["id"]) if isinstance(rows, list) and rows else ""
+    return {"token": token, "token_hash": th, "link_id": link_id}
+
+
+def _link_row(access_token: str, user_id: str, link_id: str = "",
+              token_hash: str = "") -> dict | None:
+    """This dashboard's mcp_tokens row, or None when it was deleted.
+    Raises on network/auth errors so callers never mistake an outage for
+    an unlink."""
+    if link_id and re.fullmatch(r"[0-9a-fA-F-]{36}", link_id):
+        q = f"?select=id,token_hash,last_used_at&id=eq.{link_id}"
+    elif token_hash and re.fullmatch(r"[0-9a-f]{64}", token_hash):
+        q = f"?select=id,token_hash,last_used_at&token_hash=eq.{token_hash}"
+    else:
+        return None
+    rows = _supabase_rest("GET", "mcp_tokens", access_token, prefer=None,
+                          query=q + f"&user_id=eq.{user_id}&label=eq.{DASHBOARD_LABEL}")
+    return rows[0] if isinstance(rows, list) and rows else None
+
+
+def _delete_link_row(access_token: str, user_id: str, link_id: str = "",
+                     token_hash: str = "") -> None:
+    """Delete one dashboard row (best effort, user's own RLS session)."""
+    try:
+        if link_id and re.fullmatch(r"[0-9a-fA-F-]{36}", link_id):
+            q = f"?id=eq.{link_id}"
+        elif token_hash and re.fullmatch(r"[0-9a-f]{64}", token_hash):
+            q = f"?token_hash=eq.{token_hash}"
+        else:
+            return
+        _supabase_rest("DELETE", "mcp_tokens", access_token,
+                       query=q + f"&user_id=eq.{user_id}&label=eq.{DASHBOARD_LABEL}")
+    except Exception as e:
+        print(f"[link] warning: couldn't delete dashboard row: {e}", flush=True)
+
+
+def _drop_sessions(pred) -> list[dict]:
+    """Remove matching sessions (persisted) and the widget token when its
+    owner has no session left. Returns the removed session records."""
+    removed = []
+    for sid in list(SESSIONS.keys()):
+        sess = SESSIONS.get(sid)
+        if sess is not None and pred(sess):
+            SESSIONS.pop(sid, None)
+            removed.append(sess)
+    if removed:
+        _save_sessions()
+        try:
+            owner = ""
+            if os.path.exists(WIDGET_OWNER_FILE):
+                with open(WIDGET_OWNER_FILE) as f:
+                    owner = f.read().strip()
+            if owner and not any(x.get("sub") == owner for x in SESSIONS.values()):
+                _remove_quiet(WIDGET_TOKEN_FILE)
+                _remove_quiet(WIDGET_OWNER_FILE)
+        except Exception as e:
+            print(f"[link] warning: widget cleanup failed: {e}", flush=True)
+    return removed
+
+
+class MCPAuthError(RuntimeError):
+    """The MCP server rejected the token: its mcp_tokens row is gone."""
 
 
 # ================= Per-user preferences =================
@@ -517,6 +640,8 @@ def mcp_call(tool: str, args: dict, token: str | None = None) -> dict:
             raw = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")[:500]
+        if e.code in (401, 403):
+            raise MCPAuthError(f"MCP {e.code}: {detail}")
         raise RuntimeError(f"MCP {e.code}: {detail}")
     text = raw.strip()
     if not text.startswith("{"):
@@ -811,11 +936,30 @@ class Handler(BaseHTTPRequestHandler):
             if part.startswith("mb_session="):
                 sid = part[11:]
                 sess = SESSIONS.get(sid)
-                if sess and sess["exp"] > time.time():
+                now = time.time()
+                if sess and sess["exp"] > now:
+                    self._sid = sid
+                    # Sliding expiry: an active dashboard never times out;
+                    # persisted at most once a day.
+                    if sess["exp"] - now < SESSION_TIMEOUT - 86400:
+                        sess["exp"] = now + SESSION_TIMEOUT
+                        _save_sessions()
                     return sess
                 if SESSIONS.pop(sid, None) is not None:
                     _save_sessions()
         return None
+
+    def _own_widget(self, user_id: str, token: str) -> None:
+        """Homepage widget shows whoever paired/resumed last on this server."""
+        try:
+            _write_private(WIDGET_TOKEN_FILE, token)
+            _write_private(WIDGET_OWNER_FILE, user_id)
+        except Exception as e:
+            print(f"[pair] warning: couldn't write widget token: {e}", flush=True)
+
+    def _cookie_for(self, sid: str) -> str:
+        return (f"mb_session={sid}; Path=/; Max-Age={SESSION_TIMEOUT}; "
+                f"HttpOnly; SameSite=Lax")
 
     def _new_session(self, sess: dict) -> str:
         sid = secrets.token_hex(32)
@@ -867,7 +1011,7 @@ class Handler(BaseHTTPRequestHandler):
             # Homepage widget: current pay-period stats for the paired user.
             # Dashes until someone pairs (no token = no data, not an error).
             try:
-                with open(os.path.join(BASE_DIR, ".widget_token")) as f:
+                with open(WIDGET_TOKEN_FILE) as f:
                     wtoken = f.read().strip()
             except OSError:
                 wtoken = ""
@@ -936,8 +1080,9 @@ class Handler(BaseHTTPRequestHandler):
             # Public: lets the frontend notice the phone unlinked this
             # dashboard (POST /api/pair/revoke cleared SESSIONS) so it can
             # wipe local data and show the QR gate immediately.
-            self._send(200, json.dumps(
-                {"logged_in": self._get_session() is not None}).encode())
+            sess = self._get_session()
+            extra = {"Set-Cookie": self._cookie_for(self._sid)} if sess else None
+            self._send(200, json.dumps({"logged_in": sess is not None}).encode(), extra=extra)
             return
 
         if path == "/api/config":
@@ -1101,6 +1246,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 result = mcp_call(tool, args, token=sess_token)
                 self._send(200, json.dumps(result).encode())
+            except MCPAuthError:
+                # The dashboard row was deleted (unlinked on the phone).
+                _drop_sessions(lambda x: x.get("mcp_token") == sess_token)
+                self._send(401, json.dumps({"linked": False, "error": "unlinked"}).encode())
             except Exception as e:
                 print(f"[api] {path} failed: {e}", flush=True)
                 self._send(502, json.dumps({"error": "data request failed"}).encode())
@@ -1239,11 +1388,10 @@ class Handler(BaseHTTPRequestHandler):
                 "access_token": access_token,
                 "refresh_token": refresh_token,
             }
-            # Mint a per-user MCP token so this browser sees THEIR data, not
-            # whoever's token is configured globally. Uses the user's own
-            # session (RLS-enforced) — no service key, no user action.
+            # This browser's own dashboard link (mcp_tokens row): its data
+            # token, and the record the phone lists as "linked".
             try:
-                mcp_token = _mint_mcp_token(user_id, access_token)
+                link = _mint_dashboard_link(user_id, access_token)
             except Exception as e:
                 # Never leave the phone's Supabase tokens parked on a pairing
                 # that didn't complete.
@@ -1252,28 +1400,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps(
                     {"error": "couldn't set up data access; try again"}).encode())
                 return
-            # Homepage widget token: whoever pairs with this dashboard owns
-            # the widget — each server shows its own user's stats.
-            try:
-                _wt = os.path.join(BASE_DIR, ".widget_token")
-                with open(_wt, "w") as f:
-                    f.write(mcp_token)
-                os.chmod(_wt, 0o600)
-                with open(_wt + "_owner", "w") as f:
-                    f.write(user_id)
-                os.chmod(_wt + "_owner", 0o600)
-            except Exception as e:
-                print(f"[pair] warning: couldn't write widget token: {e}",
-                      flush=True)
-            # Legacy server-side session too, so the current server-rendered
-            # pages keep working until the frontend becomes a full client.
+            self._own_widget(user_id, link["token"])
             sid = self._new_session({
                 "sub": user_id,
                 "email": str(user.get("email") or ""),
                 "name": "",
+                "mcp_token": link["token"],
+                "token_hash": link["token_hash"],
+                "link_id": link["link_id"],
             })
-            SESSIONS[sid]["mcp_token"] = mcp_token
-            _save_sessions()
+            pairing["session"]["link_id"] = link["link_id"]
             pairing["sid"] = sid
             self._send(200, json.dumps(
                 {"ok": True, "user_id": user_id}).encode())
@@ -1305,43 +1441,112 @@ class Handler(BaseHTTPRequestHandler):
             if not ruser_id:
                 self._send(401, json.dumps({"error": "login required"}).encode())
                 return
-            revoked = 0
-            for sid in list(SESSIONS.keys()):
-                if SESSIONS[sid].get("sub") == ruser_id:
-                    del SESSIONS[sid]
-                    revoked += 1
-            _save_sessions()
+            removed = _drop_sessions(lambda x: x.get("sub") == ruser_id)
+            revoked = len(removed)
             # Only this user's pending pairings (claimed, not yet picked up).
-            for code in [c for c, p in PAIRINGS.items()
-                         if (p.get("session") or {}).get("user_id") == ruser_id]:
-                PAIRINGS.pop(code, None)
-            # Widget token: only if this user owns it.
-            try:
-                wt = os.path.join(BASE_DIR, ".widget_token")
-                owner = ""
-                if os.path.exists(wt + "_owner"):
-                    with open(wt + "_owner") as f:
-                        owner = f.read().strip()
-                if owner == ruser_id:
-                    for fp in (wt, wt + "_owner"):
-                        if os.path.exists(fp):
-                            os.remove(fp)
-            except Exception as e:
-                print(f"[pair] warning: couldn't remove widget token: {e}",
-                      flush=True)
-            # Delete this user's dashboard MCP token (needs their own token).
+            pend = [c for c, p in PAIRINGS.items()
+                    if (p.get("session") or {}).get("user_id") == ruser_id]
+            for code in pend:
+                pp = PAIRINGS.pop(code, None) or {}
+                ps = SESSIONS.pop(pp.get("sid") or "", None)
+                if ps:
+                    removed.append(ps)
+                    revoked += 1
+            if pend:
+                _save_sessions()
+            # Delete THIS server's dashboard rows for the user (other servers
+            # the same account linked stay linked).
             if rtoken:
-                try:
-                    _supabase_rest("DELETE", "mcp_tokens", rtoken,
-                                   query=f"?user_id=eq.{ruser_id}&label=eq.dashboard")
-                except Exception as e:
-                    print(f"[pair] warning: couldn't delete dashboard token: {e}",
-                          flush=True)
+                for x in removed:
+                    _delete_link_row(rtoken, ruser_id, x.get("link_id", ""),
+                                     x.get("token_hash", ""))
             extra = None
             if cookie_sess:
                 extra = {"Set-Cookie": "mb_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"}
             self._send(200, json.dumps({"ok": True,
                                         "revoked_sessions": revoked}).encode(), extra=extra)
+            return
+
+        if path == "/api/session/resume":
+            # The browser still holds the phone's Supabase session but lost
+            # its server session (cookie expired, server state reset). If its
+            # dashboard row still exists it's still linked: issue a session
+            # again (rotating the data token when the old one is unknown).
+            # Row gone -> unlinked -> 401 and the browser shows the QR gate.
+            body = self._read_json_body()
+            atoken = str(body.get("access_token", "")).strip()
+            link_id = str(body.get("link_id", "")).strip()
+            if not atoken or not link_id:
+                self._send(401, json.dumps({"linked": False, "error": "not linked"}).encode())
+                return
+            try:
+                user_id = str(_supabase_get_user(atoken).get("id", ""))
+            except Exception:
+                user_id = ""
+            if not user_id:
+                # Can't verify right now (expired token, Supabase down):
+                # not a verdict, the browser keeps its data and retries.
+                self._send(503, json.dumps({"retry": True}).encode())
+                return
+            try:
+                row = _link_row(atoken, user_id, link_id=link_id)
+            except Exception as e:
+                print(f"[resume] link check failed: {e}", flush=True)
+                self._send(503, json.dumps({"retry": True}).encode())
+                return
+            if not row:
+                _drop_sessions(lambda x: x.get("link_id") == link_id and x.get("sub") == user_id)
+                self._send(401, json.dumps({"linked": False, "error": "unlinked"}).encode())
+                return
+            # Reuse a persisted session for this link if we still have one.
+            live = next(((sid, x) for sid, x in SESSIONS.items()
+                         if x.get("link_id") == link_id and x.get("sub") == user_id
+                         and x.get("exp", 0) > time.time()), None)
+            if live and live[1].get("token_hash") == row.get("token_hash"):
+                sid = live[0]
+                live[1]["exp"] = time.time() + SESSION_TIMEOUT
+                _save_sessions()
+                new_link = link_id
+            else:
+                try:
+                    link = _mint_dashboard_link(user_id, atoken)
+                except Exception as e:
+                    print(f"[resume] mint failed: {e}", flush=True)
+                    self._send(503, json.dumps({"retry": True}).encode())
+                    return
+                _delete_link_row(atoken, user_id, link_id=link_id)
+                _drop_sessions(lambda x: x.get("link_id") == link_id and x.get("sub") == user_id)
+                self._own_widget(user_id, link["token"])
+                sid = self._new_session({
+                    "sub": user_id, "email": "", "name": "",
+                    "mcp_token": link["token"], "token_hash": link["token_hash"],
+                    "link_id": link["link_id"],
+                })
+                new_link = link["link_id"]
+            self._send(200, json.dumps({"ok": True, "link_id": new_link}).encode(),
+                       extra={"Set-Cookie": self._cookie_for(sid)})
+            return
+
+        if path == "/api/session/logout":
+            # Dashboard sign-out: drop this browser's session and delete its
+            # dashboard row (with the user's own token) so the phone's
+            # "Linked dashboards" list updates.
+            body = self._read_json_body()
+            atoken = str(body.get("access_token", "")).strip()
+            sess = self._get_session()
+            sid = getattr(self, "_sid", None) if sess else None
+            if sess and sid:
+                _drop_sessions(lambda x: x is sess)
+                if atoken:
+                    try:
+                        uid = str(_supabase_get_user(atoken).get("id", ""))
+                    except Exception:
+                        uid = ""
+                    if uid and uid == sess.get("sub"):
+                        _delete_link_row(atoken, uid, sess.get("link_id", ""),
+                                         sess.get("token_hash", ""))
+            self._send(200, json.dumps({"ok": True}).encode(), extra={
+                "Set-Cookie": "mb_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"})
             return
 
         # Everything below requires a session.
@@ -1350,6 +1555,40 @@ class Handler(BaseHTTPRequestHandler):
             self._send(401, json.dumps({"error": "login required"}).encode())
             return
         sub = sess.get("sub", "")
+
+        if path == "/api/session/heartbeat":
+            # Periodic while the dashboard is open: confirm this browser's
+            # dashboard row still exists and stamp last_used_at ("last seen"
+            # on the phone). Row deleted on the phone -> sign out now.
+            body = self._read_json_body()
+            atoken = str(body.get("access_token", "")).strip()
+            try:
+                uid = str(_supabase_get_user(atoken).get("id", "")) if atoken else ""
+            except Exception:
+                uid = ""
+            if not uid or uid != sub:
+                self._send(200, json.dumps({"ok": True, "checked": False}).encode())
+                return
+            try:
+                row = _link_row(atoken, uid, sess.get("link_id", ""), sess.get("token_hash", ""))
+            except Exception as e:
+                print(f"[heartbeat] check failed: {e}", flush=True)
+                self._send(200, json.dumps({"ok": True, "checked": False}).encode())
+                return
+            if not row:
+                lid, th = sess.get("link_id"), sess.get("token_hash")
+                _drop_sessions(lambda x: (lid and x.get("link_id") == lid) or (th and x.get("token_hash") == th))
+                self._send(401, json.dumps({"linked": False, "error": "unlinked"}).encode(),
+                           extra={"Set-Cookie": "mb_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"})
+                return
+            try:
+                _supabase_rest("PATCH", "mcp_tokens", atoken,
+                               body={"last_used_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
+                               query=f"?id=eq.{row['id']}&user_id=eq.{uid}")
+            except Exception as e:
+                print(f"[heartbeat] last_used_at update failed: {e}", flush=True)
+            self._send(200, json.dumps({"ok": True, "checked": True, "linked": True}).encode())
+            return
 
         if path == "/api/preferences":
             body = self._read_json_body()
