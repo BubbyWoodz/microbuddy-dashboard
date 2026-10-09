@@ -856,6 +856,116 @@ const SyncEngine = (() => {
     };
   }
 
+
+  // ---------- conflict resolution (optimistic concurrency) ----------
+  // When you edit offline, we snapshot exactly what the target record looked
+  // like *before* your edit. On replay, if the server's copy no longer
+  // matches the snapshot, the phone (or another dashboard) changed it first —
+  // the server wins and your stale edit is skipped. Each op is checked
+  // independently, so unrelated edits always apply. No iOS changes needed:
+  // the phone doesn't have to do anything differently.
+  function stableStringify(v) {
+    if (v === undefined) return "\u0000undefined";
+    if (v === null || typeof v !== "object") return JSON.stringify(v);
+    if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
+    const keys = Object.keys(v).sort();
+    return "{" + keys.map(k => JSON.stringify(k) + ":" + stableStringify(v[k])).join(",") + "}";
+  }
+  function clone(o) {
+    return o === undefined ? undefined : JSON.parse(JSON.stringify(o));
+  }
+  // Resolve the conflict scope of an op: the record it mutates.
+  // Returns {kind, id, snap} or null for pure appends (two appends never conflict).
+  function opScope(data, op) {
+    const days = (data && Array.isArray(data.days)) ? data.days : [];
+    const day = op.dayId ? days.find(d => d.id === op.dayId) : null;
+    const ticketAt = (idx) => (day && Array.isArray(day.tickets)) ? day.tickets[idx] : undefined;
+    const findJournal = () => {
+      if (!data.journals) return undefined;
+      if (Array.isArray(data.journals)) return data.journals.find(j => (j.dayKey || j.date || j.id) === op.date);
+      return data.journals[op.date];
+    };
+    const findContact = () => (Array.isArray(data.contacts) ? data.contacts.find(x =>
+      String(x.id || x.contactId || x.name) === String(op.contactId)) : undefined);
+    switch (op.type) {
+      case "addLine": case "updateLine": case "deleteLine": case "deleteTicket":
+        return { kind: "ticket", id: op.dayId + "#" + op.ticketIndex, snap: clone(ticketAt(op.ticketIndex)) };
+      case "updateDay": case "setDayNote": case "clearDayTickets":
+        return { kind: "day", id: op.dayId, snap: clone(day) };
+      case "pasteSalesReport": {
+        // Only the pasted tickets are ours — phone-added manual tickets are merge-safe.
+        const TXN_RE = /^\d{2,4}-[A-Za-z]{2}-\d{4,}$/;
+        const pasted = day && Array.isArray(day.tickets)
+          ? day.tickets.filter(t => t.customerNote === "Pasted from the system" || TXN_RE.test(t.customerNote || ""))
+          : undefined;
+        return { kind: "day-pasted", id: op.dayId, snap: clone(pasted === undefined ? undefined :
+          { tickets: pasted, rawReport: day.rawReport, reportParseVersion: day.reportParseVersion }) };
+      }
+      case "addTicket":
+        return null;
+      case "setJournalEntry": case "setJournalEntryFull": case "deleteJournalEntry":
+        return { kind: "journal", id: op.date, snap: clone(findJournal()) };
+      case "updateMomentOverride": {
+        const entry = findJournal();
+        const story = entry && Array.isArray(entry.stories) ? entry.stories.find(s => s.id === op.storyID) : undefined;
+        return { kind: "story", id: op.date + "#" + op.storyID, snap: clone(story) };
+      }
+      case "updateShift": case "deleteShift": {
+        const sh = Array.isArray(data.shifts) ? data.shifts.find(s => s.id === op.shiftId) : undefined;
+        return { kind: "shift", id: op.shiftId, snap: clone(sh) };
+      }
+      case "addShift":
+        return null;
+      case "updateContact": case "deleteContact": case "addShiftNote":
+        return { kind: "contact", id: op.contactId, snap: clone(findContact()) };
+      case "addContact":
+        return null;
+      case "deleteShiftNote": {
+        const c = findContact();
+        const n = c && Array.isArray(c.shiftNotes) ? c.shiftNotes.find(x => String(x.id) === String(op.noteId)) : undefined;
+        return { kind: "shiftnote", id: op.contactId + "#" + op.noteId, snap: clone(n) };
+      }
+      case "updateComparison": case "deleteComparison": {
+        const cp = Array.isArray(data.comparisons) ? data.comparisons.find(x => String(x.id) === String(op.comparisonId)) : undefined;
+        return { kind: "comparison", id: op.comparisonId, snap: clone(cp) };
+      }
+      case "addComparison":
+        return null;
+      case "updateGoal": case "deleteGoal": {
+        const g = Array.isArray(data.goals) ? data.goals.find(x => String(x.id || x.goalId || x.title) === String(op.goalId)) : undefined;
+        return { kind: "goal", id: op.goalId, snap: clone(g) };
+      }
+      case "addGoal":
+        // Deactivates every other goal — scope is the whole list.
+        return { kind: "goals", id: "all", snap: clone(data.goals) };
+      case "updateProfile": case "setThemePreference":
+      case "applyBrandCorrection": case "skipBrandCorrection": case "renameBrand":
+        return { kind: "profile", id: "profile", snap: clone(data.profile) };
+      default:
+        return null;
+    }
+  }
+  function notifySkipped(skipped) {
+    try {
+      console.warn("[sync] skipped stale offline edits (server version is newer):", skipped);
+      let el = document.getElementById("sync-conflict-note");
+      if (!el) {
+        el = document.createElement("div");
+        el.id = "sync-conflict-note";
+        el.style.cssText = "position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:9999;" +
+          "padding:10px 18px;border-radius:10px;font-size:14px;color:#fff;background:rgba(20,20,22,.92);" +
+          "box-shadow:0 4px 18px rgba(0,0,0,.3);max-width:90vw;text-align:center;";
+        document.body.appendChild(el);
+      }
+      el.textContent = skipped.length === 1
+        ? "One offline change was skipped — it was already updated on your phone."
+        : skipped.length + " offline changes were skipped — they were already updated on your phone.";
+      el.style.display = "block";
+      clearTimeout(notifySkipped._t);
+      notifySkipped._t = setTimeout(() => { el.style.display = "none"; }, 7000);
+    } catch (e) {}
+  }
+
   // Queue a write: apply to the local blob immediately (optimistic UI),
   // store the op for later sync, and push now if online.
   async function queueWrite(op) {
@@ -866,6 +976,15 @@ const SyncEngine = (() => {
       backup = await getLocalBackup();
     }
     if (!backup || !backup.data) throw new Error("No backup data — sync first.");
+    // Conflict snapshot: remember exactly what the target looked like before
+    // our edit, so replay can tell whether the phone changed it first.
+    // Pure appends (new tickets, shifts, contacts...) carry no snapshot —
+    // two appends never conflict.
+    op.ts = Date.now();
+    try {
+      const scope = opScope(backup.data, op);
+      if (scope) op.base = { kind: scope.kind, id: scope.id, snap: stableStringify(scope.snap) };
+    } catch (e) { /* snapshot failure must never block the edit */ }
     if (!applyOp(backup, op)) throw new Error("Couldn't apply that change.");
     backup.cachedAt = Date.now();
     backup.dirty = true;
@@ -873,13 +992,17 @@ const SyncEngine = (() => {
     await MBDB.queueWrite(op);
     // Try to push immediately if we're online.
     if (navigator.onLine) {
-      processWriteQueue().catch(e => console.warn("write sync failed:", e.message));
+      processWriteQueue()
+        .then(res => { if (res && res.skipped && res.skipped.length) notifySkipped(res.skipped); })
+        .catch(e => console.warn("write sync failed:", e.message));
     }
     return true;
   }
 
-  // Push all queued ops to Supabase: re-read the server blob, apply our ops
-  // in order (ours win on the fields we touched), PUT it back.
+  // Push all queued ops to Supabase: re-read the server blob, then replay
+  // each op — but only if the record it touches still matches the snapshot
+  // taken when the edit was made. If the phone changed it first, the server
+  // wins and the stale op is skipped (and reported).
   async function processWriteQueue() {
     if (!navigator.onLine) return { pushed: 0, offline: true };
     const queued = await MBDB.getWriteQueue().catch(() => []);
@@ -888,8 +1011,25 @@ const SyncEngine = (() => {
     if (!data) throw new Error("No backup on server.");
     const backup = { data, updated_at, cachedAt: Date.now() };
     const appliedIds = [];
+    const skipped = [];
     for (const q of queued) {
-      if (applyOp(backup, q.op)) appliedIds.push(q.id);
+      const op = q.op || {};
+      let conflict = false;
+      if (op.base && typeof op.base.snap === "string") {
+        try {
+          const scope = opScope(backup.data, op);
+          const fresh = scope ? stableStringify(scope.snap) : stableStringify(undefined);
+          if (fresh !== op.base.snap) conflict = true;
+        } catch (e) { conflict = false; }
+      }
+      if (conflict) {
+        skipped.push({ type: op.type, id: (op.base && op.base.id) || "", ts: op.ts || q.ts || 0 });
+        console.warn("[sync] skipping stale offline edit — server version is newer:",
+          op.type, op.base && op.base.id);
+        appliedIds.push(q.id); // drop it: the server won
+        continue;
+      }
+      if (applyOp(backup, op)) appliedIds.push(q.id);
     }
     if (appliedIds.length) {
       await SB.saveBackup(backup.data);
@@ -897,7 +1037,7 @@ const SyncEngine = (() => {
       backup.dirty = false;
       await MBDB.kvSet("backup", backup);
     }
-    return { pushed: appliedIds.length };
+    return { pushed: appliedIds.length, skipped };
   }
 
   // Export the public API.
