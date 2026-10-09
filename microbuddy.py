@@ -91,7 +91,28 @@ SESSION_TIMEOUT = 86400 * 30  # 30 days
 _JWKS_CACHE: dict = {"keys": None, "fetched_at": 0}
 _JWKS_TTL = 86400  # refresh Apple's public keys daily
 
-VALID_THEMES = {"dark", "win95", "frosted", "terminal"}
+VALID_THEMES = {"dark", "light", "win95", "modern", "terminal"}
+
+def normalize_theme(t: str) -> str | None:
+    """Map iOS/display theme names to dashboard CSS theme names."""
+    if not t:
+        return None
+    s = "".join(c for c in t.lower() if c.isalnum())
+    # Direct match
+    if s in VALID_THEMES:
+        return s
+    # iOS variations
+    if "win95" in s or "windows95" in s:
+        return "win95"
+    if "terminal" in s:
+        return "terminal"
+    if "modern" in s or "frosted" in s or "glass" in s:
+        return "modern"
+    if "light" in s:
+        return "light"
+    if "dark" in s:
+        return "dark"
+    return None
 AI_PROVIDERS = {"disabled", "ollama", "openai"}
 
 
@@ -117,7 +138,7 @@ APP_BUNDLE_ID = _read_secret("APPLE_APP_BUNDLE_ID", ".apple_app_id")
 # reboot. Unlink (/api/pair/revoke) and /logout clear it and re-save, so a
 # wiped login can never be resurrected by a restart.
 SESSIONS: dict[str, dict] = {}
-DASHBOARD_VERSION = "1.1.11"
+DASHBOARD_VERSION = "1.1.12"
 SESSIONS_FILE = os.path.join(BASE_DIR, ".sessions.json")
 _rpc_id = 0
 
@@ -297,8 +318,9 @@ def load_prefs(sub: str) -> dict:
         with open(_user_path(sub)) as f:
             stored = json.load(f)
         if isinstance(stored, dict):
-            if stored.get("theme") in VALID_THEMES:
-                prefs["theme"] = stored["theme"]
+            _nt = normalize_theme(str(stored.get("theme") or ""))
+            if _nt:
+                prefs["theme"] = _nt
             ac = stored.get("ai_config")
             if isinstance(ac, dict):
                 for k in ("provider", "server_url", "model", "api_key"):
@@ -451,8 +473,7 @@ def get_shared_theme(sub: str) -> "str | None":
         rows = json.loads(data or "[]")
         if isinstance(rows, list) and rows:
             t = rows[0].get("theme")
-            if t in VALID_THEMES:
-                theme = t
+            theme = normalize_theme(str(t or ""))
     except Exception as e:
         print(f"[prefs] shared theme read failed (falling back to local theme): {e}",
               flush=True)
@@ -462,8 +483,10 @@ def get_shared_theme(sub: str) -> "str | None":
 
 def set_shared_theme(sub: str, theme: str) -> bool:
     """Write the theme to Supabase user_preferences (best effort)."""
-    if not sub or theme not in VALID_THEMES:
+    _nt = normalize_theme(theme)
+    if not sub or not _nt:
         return False
+    theme = _nt
     try:
         body = json.dumps({
             "id": sub,
@@ -1397,9 +1420,11 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json_body()
             prefs = load_prefs(sub)
             theme_changed = False
-            if isinstance(body.get("theme"), str) and body["theme"] in VALID_THEMES:
-                if prefs.get("theme") != body["theme"]:
+            _bt = normalize_theme(str(body.get("theme") or "")) if isinstance(body.get("theme"), str) else None
+            if _bt:
+                if prefs.get("theme") != _bt:
                     theme_changed = True
+                    body["theme"] = _bt
                 prefs["theme"] = body["theme"]
             ac = body.get("ai_config")
             if isinstance(ac, dict):
