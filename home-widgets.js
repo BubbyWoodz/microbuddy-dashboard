@@ -166,8 +166,7 @@ const HomeWidgetsUI = (() => {
     const shift = nextShift(d.shifts);
     const name = displayName(profile);
     return `<div class="panel col-12 home-greet">` +
-      `<button class="avatar-btn" data-nav="settings" title="Settings" aria-label="Settings">${avatarHTML(profile, 64)}</button>` +
-      `<div class="grow"><div class="hi">${esc(greetingText())}</div>` +
+      `<div class="greet-text"><div class="hi">${esc(greetingText())}</div>` +
       `<div class="name">${esc(name || "Welcome")}</div>` +
       `<div class="pills">${chip(DEPT_TITLES[profile.department] || "GSA", "filled")}` +
       (shift ? `<span class="chip navy">${I("clock", { size: 13 })}${esc(nextShiftText(shift))}</span>` : "") + `</div></div>` +

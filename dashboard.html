@@ -12,8 +12,8 @@
 <meta name="apple-mobile-web-app-title" content="Micro Buddy">
 <link rel="apple-touch-icon" href="/icons/icon-180.png">
 <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/themes.css?v=2.0.0">
-<link rel="stylesheet" href="/components.css?v=2.0.0">
+<link rel="stylesheet" href="/themes.css?v=2.0.1">
+<link rel="stylesheet" href="/components.css?v=2.0.1">
 <script>
 /* Apply the last theme before first paint (no flash of the default). */
 (function () {
@@ -72,11 +72,6 @@ window.toast = toast;
         <h1>Micro <span>Buddy</span></h1>
         <div class="brand-sub" id="today-label"></div>
       </div>
-    </div>
-    <div class="brand-divider"></div>
-    <div class="header-greet">
-      <span class="hg-hi" id="header-greeting"></span>
-      <span class="hg-date" id="last-sync"></span>
     </div>
     <nav class="top-nav" id="top-nav" aria-label="Main">
       <button data-tab="home" class="active"><span data-ico="home"></span><span class="lbl">Home</span></button>
@@ -156,30 +151,30 @@ window.toast = toast;
   </div>
 </div>
 
-<script src="/icons.js?v=2.0.0"></script>
-<script src="/db.js?v=2.0.0"></script>
-<script src="/sb.js?v=2.0.0"></script>
-<script src="/sync.js?v=2.0.0"></script>
-<script src="/payengine.js?v=2.0.0"></script>
-<script src="/daydetail.js?v=2.0.0"></script>
-<script src="/stats.js?v=2.0.0"></script>
-<script src="/badges.js?v=2.0.0"></script>
-<script src="/sales.js?v=2.0.0"></script>
-<script src="/sale-entry.js?v=2.0.0"></script>
-<script src="/schedule.js?v=2.0.0"></script>
-<script src="/journal.js?v=2.0.0"></script>
-<script src="/coworkers.js?v=2.0.0"></script>
-<script src="/goals.js?v=2.0.0"></script>
-<script src="/microcharm.js?v=2.0.0"></script>
-<script src="/profile.js?v=2.0.0"></script>
-<script src="/leaderboard.js?v=2.0.0"></script>
-<script src="/brands.js?v=2.0.0"></script>
-<script src="/home-widgets.js?v=2.0.0"></script>
+<script src="/icons.js?v=2.0.1"></script>
+<script src="/db.js?v=2.0.1"></script>
+<script src="/sb.js?v=2.0.1"></script>
+<script src="/sync.js?v=2.0.1"></script>
+<script src="/payengine.js?v=2.0.1"></script>
+<script src="/daydetail.js?v=2.0.1"></script>
+<script src="/stats.js?v=2.0.1"></script>
+<script src="/badges.js?v=2.0.1"></script>
+<script src="/sales.js?v=2.0.1"></script>
+<script src="/sale-entry.js?v=2.0.1"></script>
+<script src="/schedule.js?v=2.0.1"></script>
+<script src="/journal.js?v=2.0.1"></script>
+<script src="/coworkers.js?v=2.0.1"></script>
+<script src="/goals.js?v=2.0.1"></script>
+<script src="/microcharm.js?v=2.0.1"></script>
+<script src="/profile.js?v=2.0.1"></script>
+<script src="/leaderboard.js?v=2.0.1"></script>
+<script src="/brands.js?v=2.0.1"></script>
+<script src="/home-widgets.js?v=2.0.1"></script>
 <script src="/qrcode.min.js"></script>
-<script src="/settings.js?v=2.0.0"></script>
-<script src="/screen-lock.js?v=2.0.0"></script>
-<script src="/buddy-actions.js?v=2.0.0"></script>
-<script src="/buddy.js?v=2.0.0"></script>
+<script src="/settings.js?v=2.0.1"></script>
+<script src="/screen-lock.js?v=2.0.1"></script>
+<script src="/buddy-actions.js?v=2.0.1"></script>
+<script src="/buddy.js?v=2.0.1"></script>
 
 <script>
 "use strict";
@@ -211,7 +206,6 @@ async function paintHeader() {
   const sb = SB.cachedProfile();
   // HomeView: nickname, else first name, else "Welcome".
   const name = HomeWidgetsUI.displayName(profile) || (sb && (sb.buddyName || sb.firstName)) || "";
-  $("header-greeting").textContent = name ? HomeWidgetsUI.greetingText() + " " + name : "Welcome";
   const p = Object.assign({}, profile);
   if (!p.name && sb) p.name = sb.fullName;
   $("avatar-btn").innerHTML = HomeWidgetsUI.avatarHTML(p, 40);
