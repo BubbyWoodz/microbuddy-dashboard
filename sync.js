@@ -142,7 +142,9 @@ const SyncEngine = (() => {
   // ---- blob sync (replaces the old per-day MCP crawl) ----
   // Pull the latest backup blob + profile row and remember when.
   async function pullAll() {
-    await processWriteQueue().catch(e => { if (e && e.isAuth) throw e; });
+    await processWriteQueue()
+      .then(r => { if (r && r.skipped && r.skipped.length) notifySkipped(r.skipped); })
+      .catch(e => { if (e && e.isAuth) throw e; });
     const res = await syncBackup();
     try { if (typeof SB !== "undefined") await SB.getProfile({ force: true }); } catch (e) { if (e && e.isAuth) throw e; }
     await MBDB.kvSet("lastSync", Date.now());
@@ -152,11 +154,17 @@ const SyncEngine = (() => {
 
   async function fullSync(onProgress) {
     if (syncing) return;
-    if (!navigator.onLine) throw new Error("Can't do the first sync offline — connect to Wi-Fi.");
+    if (!navigator.onLine) {
+      // Supabase unreachable: this dashboard's server may still hold the
+      // user's latest copy (it's on the LAN).
+      if (await seedFromServerCopy()) return;
+      throw new Error("Can't do the first sync offline — connect to Wi-Fi.");
+    }
     setSyncing(true, "Downloading");
     try {
       if (onProgress) onProgress("fetch", 1, 1);
-      await pullAll();
+      try { await pullAll(); }
+      catch (e) { if ((e && e.isAuth) || !(await seedFromServerCopy())) throw e; }
       await MBDB.kvSet("fullSyncDone", true);
     } finally {
       setSyncing(false);
@@ -360,6 +368,7 @@ const SyncEngine = (() => {
     needsFullSync, refreshLastSyncLabel, setSyncing,
     syncPreferences, applyTheme, setTheme, setThemeMode, themeState, normalizeTheme,
     syncChat, syncBackup, queueWrite, processWriteQueue, getLocalBackup,
+    pushOfflineCopy, seedFromServerCopy, merge3, replayOp, opScope, applyOp,
     syncThemeFromBlob, applyOp,
   };
 
@@ -378,6 +387,7 @@ const SyncEngine = (() => {
     if (!data) return { synced: false, empty: true };
     await MBDB.kvSet("backup", { data, updated_at, cachedAt: Date.now() });
     await MBDB.kvSet("backupUpdatedAt", updated_at);
+    pushOfflineCopy().catch(() => {});
     return { synced: true, updated_at };
   }
 
@@ -852,79 +862,187 @@ const SyncEngine = (() => {
   function clone(o) {
     return o === undefined ? undefined : JSON.parse(JSON.stringify(o));
   }
-  // Resolve the conflict scope of an op: the record it mutates.
-  // Returns {kind, id, snap} or null for pure appends (two appends never conflict).
+  // ---- Conflict-safe replay (2.0.9) ----
+  // Each queued op remembers the record it touches as it was BEFORE the edit
+  // (base) and AFTER it (after). On reconnect the queue is replayed onto the
+  // freshest blob:
+  //  - record unchanged since base  -> the op is applied normally;
+  //  - record changed on the phone  -> 3-way field merge: fields only the
+  //    dashboard changed are kept, fields the phone changed win, arrays of
+  //    records merge by id, a phone edit beats a dashboard delete, and a
+  //    phone delete beats a dashboard edit. Any field we had to drop is
+  //    reported ("changed on your phone").
+  // Records are located by id (tickets by their UUID, not by position), so
+  // tickets the phone inserted never shift an edit onto the wrong ticket.
+  function deepEq(a, b) { return stableStringify(a) === stableStringify(b); }
+  function isObj(v) { return v !== null && typeof v === "object" && !Array.isArray(v); }
+  function keyOf(v) { return (isObj(v) && v.id != null) ? String(v.id) : null; }
+
+  function merge3(base, mine, theirs, st) {
+    if (deepEq(mine, theirs)) return clone(mine);
+    if (deepEq(mine, base)) return clone(theirs);
+    if (deepEq(theirs, base)) return clone(mine);
+    // Both sides changed this value.
+    if (isObj(base) && isObj(mine) && isObj(theirs)) {
+      const out = {};
+      const keys = new Set([...Object.keys(base), ...Object.keys(mine), ...Object.keys(theirs)]);
+      for (const k of keys) {
+        const v = merge3(base[k], mine[k], theirs[k], st);
+        if (v !== undefined) out[k] = v;
+      }
+      return out;
+    }
+    if (Array.isArray(base) && Array.isArray(mine) && Array.isArray(theirs)) {
+      const all = [...base, ...mine, ...theirs];
+      if (all.length && all.every(x => keyOf(x) !== null)) return mergeById(base, mine, theirs, st);
+      if (all.every(x => x === null || typeof x !== "object")) {
+        // Sets of primitives (e.g. holiday dates): apply our adds/removes.
+        const out = theirs.filter(x => !(base.includes(x) && !mine.includes(x)));
+        mine.forEach(x => { if (!base.includes(x) && !out.includes(x)) out.push(x); });
+        return out;
+      }
+    }
+    if (mine === undefined) { st.conflicts++; return clone(theirs); }   // we deleted, phone edited: keep phone
+    if (theirs === undefined) { st.conflicts++; return undefined; }     // phone deleted, we edited: stays deleted
+    st.conflicts++;
+    return clone(theirs);                                                 // same field changed on both: phone wins
+  }
+
+  function mergeById(base, mine, theirs, st) {
+    const idx = arr => { const m = new Map(); arr.forEach(x => m.set(keyOf(x), x)); return m; };
+    const B = idx(base), M = idx(mine), T = idx(theirs);
+    const out = [];
+    for (const t of theirs) {
+      const k = keyOf(t);
+      if (B.has(k) && !M.has(k)) {             // we deleted it
+        if (deepEq(t, B.get(k))) continue;     // phone didn't touch it: delete
+        st.conflicts++; out.push(clone(t));    // phone edited after our delete: keep phone's
+        continue;
+      }
+      out.push(M.has(k) ? merge3(B.get(k), M.get(k), t, st) : clone(t));
+    }
+    for (const m of mine) {
+      const k = keyOf(m);
+      if (T.has(k)) continue;
+      if (!B.has(k)) out.push(clone(m));       // we added it
+      else if (!deepEq(m, B.get(k))) st.conflicts++;  // phone deleted, we edited: stays deleted
+    }
+    return out.filter(x => x !== undefined);
+  }
+
+  // Locate the record an op mutates: {kind, id, get(), set(v)}; null for
+  // pure appends (two appends never conflict).
   function opScope(data, op) {
-    const days = (data && Array.isArray(data.days)) ? data.days : [];
-    const day = op.dayId ? days.find(d => d.id === op.dayId) : null;
-    const ticketAt = (idx) => (day && Array.isArray(day.tickets)) ? day.tickets[idx] : undefined;
-    const findJournal = () => {
-      if (!data.journals) return undefined;
-      if (Array.isArray(data.journals)) return data.journals.find(j => (j.dayKey || j.date || j.id) === op.date);
-      return data.journals[op.date];
-    };
+    if (!data) return null;
+    const days = () => (Array.isArray(data.days) ? data.days : (data.days = []));
+    const findDay = () => days().find(d => d.id === op.dayId);
+    const inArray = (arrName, pred, kind, id, parent) => ({
+      kind, id,
+      get: () => { const arr = (parent ? parent() : data) || {}; const a = arr[arrName]; return Array.isArray(a) ? a.find(pred) : undefined; },
+      set: v => {
+        const host = parent ? parent() : data;
+        if (!host) return;
+        if (!Array.isArray(host[arrName])) host[arrName] = [];
+        const a = host[arrName], i = a.findIndex(pred);
+        if (v === undefined) { if (i >= 0) a.splice(i, 1); }
+        else if (i >= 0) a[i] = v; else a.push(v);
+      },
+    });
+    const findJournalHost = () => data.journals;
+    const journalPred = j => (j.dayKey || j.date || j.id) === op.date;
     const findContact = () => (Array.isArray(data.contacts) ? data.contacts.find(x =>
       String(x.id || x.contactId || x.name) === String(op.contactId)) : undefined);
+    const prop = (key, kind) => ({ kind, id: key, get: () => data[key], set: v => { if (v === undefined) delete data[key]; else data[key] = v; } });
     switch (op.type) {
-      case "addLine": case "updateLine": case "deleteLine": case "deleteTicket":
-        return { kind: "ticket", id: op.dayId + "#" + op.ticketIndex, snap: clone(ticketAt(op.ticketIndex)) };
+      case "addLine": case "updateLine": case "deleteLine": case "deleteTicket": {
+        if (!op.ticketId) {
+          const d = findDay();
+          const t = d && Array.isArray(d.tickets) ? d.tickets[op.ticketIndex] : undefined;
+          if (t && t.id) op.ticketId = String(t.id);
+        }
+        const tid = op.ticketId;
+        return inArray("tickets", t => String(t.id) === String(tid), "ticket", op.dayId + "#" + tid, findDay);
+      }
       case "updateDay": case "setDayNote": case "clearDayTickets":
-        return { kind: "day", id: op.dayId, snap: clone(day) };
+        return inArray("days", d => d.id === op.dayId, "day", op.dayId);
       case "pasteSalesReport": {
-        // Only the pasted tickets are ours — phone-added manual tickets are merge-safe.
+        // Legacy snapshot check: only the pasted tickets are ours.
+        const day = findDay();
         const TXN_RE = /^\d{2,4}-[A-Za-z]{2}-\d{4,}$/;
         const pasted = day && Array.isArray(day.tickets)
           ? day.tickets.filter(t => t.customerNote === "Pasted from the system" || TXN_RE.test(t.customerNote || ""))
           : undefined;
-        return { kind: "day-pasted", id: op.dayId, snap: clone(pasted === undefined ? undefined :
-          { tickets: pasted, rawReport: day.rawReport, reportParseVersion: day.reportParseVersion }) };
+        const snap = pasted === undefined ? undefined : { tickets: pasted, rawReport: day.rawReport, reportParseVersion: day.reportParseVersion };
+        return { kind: "day-pasted", id: op.dayId, legacy: true, get: () => snap, set: () => {} };
       }
-      case "addTicket":
+      case "addTicket": case "addShift": case "addContact": case "addComparison":
         return null;
-      case "setJournalEntry": case "setJournalEntryFull": case "deleteJournalEntry":
-        return { kind: "journal", id: op.date, snap: clone(findJournal()) };
+      case "setJournalEntry": case "setJournalEntryFull": case "deleteJournalEntry": {
+        if (isObj(data.journals)) return { kind: "journal", id: op.date, get: () => data.journals[op.date],
+          set: v => { if (v === undefined) delete data.journals[op.date]; else data.journals[op.date] = v; } };
+        return inArray("journals", journalPred, "journal", op.date);
+      }
       case "updateMomentOverride": {
-        const entry = findJournal();
-        const story = entry && Array.isArray(entry.stories) ? entry.stories.find(s => s.id === op.storyID) : undefined;
-        return { kind: "story", id: op.date + "#" + op.storyID, snap: clone(story) };
+        const entry = () => { const h = findJournalHost(); return Array.isArray(h) ? h.find(journalPred) : (h ? h[op.date] : undefined); };
+        return inArray("stories", x => x.id === op.storyID, "story", op.date + "#" + op.storyID, entry);
       }
-      case "updateShift": case "deleteShift": {
-        const sh = Array.isArray(data.shifts) ? data.shifts.find(s => s.id === op.shiftId) : undefined;
-        return { kind: "shift", id: op.shiftId, snap: clone(sh) };
-      }
-      case "addShift":
-        return null;
+      case "updateShift": case "deleteShift":
+        return inArray("shifts", x => x.id === op.shiftId, "shift", op.shiftId);
       case "updateContact": case "deleteContact": case "addShiftNote":
-        return { kind: "contact", id: op.contactId, snap: clone(findContact()) };
-      case "addContact":
-        return null;
-      case "deleteShiftNote": {
-        const c = findContact();
-        const n = c && Array.isArray(c.shiftNotes) ? c.shiftNotes.find(x => String(x.id) === String(op.noteId)) : undefined;
-        return { kind: "shiftnote", id: op.contactId + "#" + op.noteId, snap: clone(n) };
-      }
-      case "updateComparison": case "deleteComparison": {
-        const cp = Array.isArray(data.comparisons) ? data.comparisons.find(x => String(x.id) === String(op.comparisonId)) : undefined;
-        return { kind: "comparison", id: op.comparisonId, snap: clone(cp) };
-      }
-      case "addComparison":
-        return null;
-      case "updateGoal": case "deleteGoal": {
-        const g = Array.isArray(data.goals) ? data.goals.find(x => String(x.id || x.goalId || x.title) === String(op.goalId)) : undefined;
-        return { kind: "goal", id: op.goalId, snap: clone(g) };
-      }
+        return inArray("contacts", x => String(x.id || x.contactId || x.name) === String(op.contactId), "contact", op.contactId);
+      case "deleteShiftNote":
+        return inArray("shiftNotes", x => String(x.id) === String(op.noteId), "shiftnote", op.contactId + "#" + op.noteId, findContact);
+      case "updateComparison": case "deleteComparison":
+        return inArray("comparisons", x => String(x.id) === String(op.comparisonId), "comparison", op.comparisonId);
+      case "updateGoal": case "deleteGoal":
+        return inArray("goals", x => String(x.id || x.goalId || x.title) === String(op.goalId), "goal", op.goalId);
       case "addGoal":
-        // Deactivates every other goal — scope is the whole list.
-        return { kind: "goals", id: "all", snap: clone(data.goals) };
+        return prop("goals", "goals");
       case "setHolidayDates":
-        return { kind: "holidays", id: "holidayDates", snap: clone(data.holidayDates) };
+        return prop("holidayDates", "holidays");
       case "updateProfile":
-      case "applyBrandCorrection": case "skipBrandCorrection": case "renameBrand":
-        return { kind: "profile", id: "profile", snap: clone(data.profile) };
+        return prop("profile", "profile");
+      case "applyBrandCorrection": case "skipBrandCorrection": case "renameBrand": {
+        // Touches lines across many days: replayed as an operation (idempotent
+        // rename), checked against the profile like before.
+        const snap = clone(data.profile);
+        return { kind: "profile-brand", id: "profile", legacy: true, get: () => snap, set: () => {} };
+      }
       default:
         return null;
     }
   }
+
+  /// Apply one queued op onto the fresh server blob. Returns
+  /// {applied, conflicts, skipped}.
+  function replayOp(backup, op) {
+    const scope = op.base ? opScope(backup.data, op) : null;
+    if (!op.base || !scope) return { applied: applyOp(backup, op), conflicts: 0 };
+    if (scope.legacy || !op.base.v2) {
+      // Old-format queue entries (pre-2.0.9) and multi-record ops: all or nothing.
+      const fresh = stableStringify(clone(scope.get()));
+      if (op.base.snap !== undefined && fresh !== op.base.snap) return { applied: false, skipped: true, conflicts: 1 };
+      return { applied: applyOp(backup, op), conflicts: 0 };
+    }
+    const fresh = clone(scope.get());
+    const baseObj = op.base.obj === null ? undefined : op.base.obj;
+    const afterObj = op.base.after === null ? undefined : op.base.after;
+    if (deepEq(fresh, baseObj)) {
+      // Untouched on the phone: apply normally (keeps side effects), with
+      // the ticket index re-pointed at the same ticket by id.
+      if (op.ticketId) {
+        const day = (backup.data.days || []).find(d => d.id === op.dayId);
+        const i = day && Array.isArray(day.tickets) ? day.tickets.findIndex(t => String(t.id) === String(op.ticketId)) : -1;
+        if (i >= 0) op.ticketIndex = i;
+      }
+      return { applied: applyOp(backup, op), conflicts: 0 };
+    }
+    const st = { conflicts: 0 };
+    const merged = merge3(baseObj, afterObj, fresh, st);
+    scope.set(merged === undefined ? undefined : merged);
+    return { applied: true, conflicts: st.conflicts };
+  }
+
   function notifySkipped(skipped) {
     try {
       console.warn("[sync] skipped stale offline edits (server version is newer):", skipped);
@@ -937,9 +1055,7 @@ const SyncEngine = (() => {
           "box-shadow:0 4px 18px rgba(0,0,0,.3);max-width:90vw;text-align:center;";
         document.body.appendChild(el);
       }
-      el.textContent = skipped.length === 1
-        ? "One offline change was skipped — it was already updated on your phone."
-        : skipped.length + " offline changes were skipped — they were already updated on your phone.";
+      el.textContent = "Some offline changes were skipped because they were changed on your phone.";
       el.style.display = "block";
       clearTimeout(notifySkipped._t);
       notifySkipped._t = setTimeout(() => { el.style.display = "none"; }, 7000);
@@ -961,11 +1077,22 @@ const SyncEngine = (() => {
     // Pure appends (new tickets, shifts, contacts...) carry no snapshot —
     // two appends never conflict.
     op.ts = Date.now();
+    let scope = null;
     try {
-      const scope = opScope(backup.data, op);
-      if (scope) op.base = { kind: scope.kind, id: scope.id, snap: stableStringify(scope.snap) };
-    } catch (e) { /* snapshot failure must never block the edit */ }
+      scope = opScope(backup.data, op);
+      if (scope) {
+        const before = clone(scope.get());
+        op.base = { kind: scope.kind, id: scope.id, snap: stableStringify(before) };
+        if (!scope.legacy) { op.base.v2 = true; op.base.obj = before === undefined ? null : before; }
+      }
+    } catch (e) { scope = null; /* snapshot failure must never block the edit */ }
     if (!applyOp(backup, op)) throw new Error("Couldn't apply that change.");
+    try {
+      if (scope && op.base && "obj" in op.base) {
+        const after = clone(opScope(backup.data, op).get());
+        op.base.after = after === undefined ? null : after;
+      }
+    } catch (e) { if (op.base) { delete op.base.obj; delete op.base.v2; } }
     backup.cachedAt = Date.now();
     backup.dirty = true;
     await MBDB.kvSet("backup", backup);
@@ -979,45 +1106,77 @@ const SyncEngine = (() => {
     return true;
   }
 
-  // Push all queued ops to Supabase: re-read the server blob, then replay
-  // each op — but only if the record it touches still matches the snapshot
-  // taken when the edit was made. If the phone changed it first, the server
-  // wins and the stale op is skipped (and reported).
+  // Push all queued ops: fetch the newest blob, rebase every queued op onto
+  // it (replayOp), then write with optimistic concurrency (only if nobody
+  // wrote since our fetch). A race -> refetch, rebase again (up to 5 tries).
+  var pushing = null;
   async function processWriteQueue() {
-    if (!navigator.onLine) return { pushed: 0, offline: true };
-    const queued = await MBDB.getWriteQueue().catch(() => []);
-    if (!queued.length) return { pushed: 0 };
-    const { data, updated_at } = await SB.getBackup();
-    if (!data) throw new Error("No backup on server.");
-    const backup = { data, updated_at, cachedAt: Date.now() };
-    const appliedIds = [];
-    const skipped = [];
-    for (const q of queued) {
-      const op = q.op || {};
-      let conflict = false;
-      if (op.base && typeof op.base.snap === "string") {
+    if (pushing) return pushing;
+    pushing = (async () => {
+      if (!navigator.onLine) return { pushed: 0, offline: true };
+      const queued = await MBDB.getWriteQueue().catch(() => []);
+      if (!queued.length) return { pushed: 0 };
+      let lastErr = null;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const { data, updated_at } = await SB.getBackup();
+        if (!data && updated_at === null && attempt === 0 && !queued.length) return { pushed: 0 };
+        const backup = { data: data || {}, updated_at, cachedAt: Date.now() };
+        const skipped = [];
+        for (const q of queued) {
+          // Queue entries keep JSON-safe base snapshots; undefined came back as absent.
+          const op = clone(q.op || {});
+          let r;
+          try { r = replayOp(backup, op); } catch (e) { r = { applied: false, conflicts: 1, skipped: true }; }
+          if (r.conflicts) skipped.push({ type: op.type, id: (op.base && op.base.id) || "", ts: op.ts || q.ts || 0, partial: !r.skipped });
+        }
         try {
-          const scope = opScope(backup.data, op);
-          const fresh = scope ? stableStringify(scope.snap) : stableStringify(undefined);
-          if (fresh !== op.base.snap) conflict = true;
-        } catch (e) { conflict = false; }
+          const savedAt = await SB.saveBackup(backup.data, updated_at === undefined ? null : updated_at);
+          await MBDB.clearWriteQueue(queued.map(q => q.id));
+          backup.updated_at = savedAt;
+          backup.dirty = false;
+          await MBDB.kvSet("backup", backup);
+          await MBDB.kvSet("backupUpdatedAt", savedAt);
+          pushOfflineCopy(backup).catch(() => {});
+          try { window.dispatchEvent(new CustomEvent("mb:data-changed")); } catch (e) {}
+          return { pushed: queued.length, skipped, attempts: attempt + 1 };
+        } catch (e) {
+          if (e && e.conflict) { lastErr = e; await new Promise(r => setTimeout(r, 150 * (attempt + 1))); continue; }
+          throw e;
+        }
       }
-      if (conflict) {
-        skipped.push({ type: op.type, id: (op.base && op.base.id) || "", ts: op.ts || q.ts || 0 });
-        console.warn("[sync] skipping stale offline edit — server version is newer:",
-          op.type, op.base && op.base.id);
-        appliedIds.push(q.id); // drop it: the server won
-        continue;
-      }
-      if (applyOp(backup, op)) appliedIds.push(q.id);
-    }
-    if (appliedIds.length) {
-      await SB.saveBackup(backup.data);
-      await MBDB.clearWriteQueue(appliedIds);
-      backup.dirty = false;
-      await MBDB.kvSet("backup", backup);
-    }
-    return { pushed: appliedIds.length, skipped };
+      throw lastErr || new Error("Couldn't save — the backup kept changing. Will retry.");
+    })();
+    try { return await pushing; } finally { pushing = null; }
+  }
+
+  // ---- Server-side offline copy (per user, on this dashboard's server) ----
+  var lastCopyKey = null;
+  async function pushOfflineCopy(backup) {
+    backup = backup || await getLocalBackup();
+    if (!backup || !backup.data) return;
+    let profile = null;
+    try { profile = await MBDB.kvGet("profileRow"); } catch (e) {}
+    const key = String(backup.updated_at) + "|" + (profile ? stableStringify(profile).length : 0);
+    if (key === lastCopyKey) return;
+    const res = await fetch("/api/offline-copy", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ backup: { data: backup.data, updated_at: backup.updated_at }, profile }) });
+    if (res.ok) lastCopyKey = key;
+  }
+  /// New browser, or Supabase unreachable: seed from this user's server copy.
+  async function seedFromServerCopy(opts) {
+    const have = await getLocalBackup();
+    if (have && have.data && !(opts && opts.force)) return false;
+    try {
+      const res = await fetch("/api/offline-copy", { cache: "no-store" });
+      if (!res.ok) return false;
+      const copy = await res.json();
+      if (!copy || !copy.backup || !copy.backup.data) return false;
+      await MBDB.kvSet("backup", { data: copy.backup.data, updated_at: copy.backup.updated_at, cachedAt: Date.now(), fromServerCopy: true });
+      await MBDB.kvSet("backupUpdatedAt", copy.backup.updated_at);
+      if (copy.profile) { try { await MBDB.kvSet("profileRow", copy.profile); } catch (e) {} }
+      await MBDB.kvSet("fullSyncDone", true);
+      return true;
+    } catch (e) { return false; }
   }
 
 })();

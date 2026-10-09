@@ -137,7 +137,7 @@ APP_BUNDLE_ID = _read_secret("APPLE_APP_BUNDLE_ID", ".apple_app_id")
 # reboot. Unlink (/api/pair/revoke) and /logout clear it and re-save, so a
 # wiped login can never be resurrected by a restart.
 SESSIONS: dict[str, dict] = {}
-DASHBOARD_VERSION = "2.0.8"
+DASHBOARD_VERSION = "2.0.9"
 # Server state lives on the mounted users volume (/app/users), NOT in the
 # image's /app: an app update replaces the container, and anything outside a
 # volume (the old /app/.sessions.json, /app/.widget_token) vanished with it,
@@ -382,6 +382,12 @@ def _drop_sessions(pred) -> list[dict]:
             removed.append(sess)
     if removed:
         _save_sessions()
+        for sub in {x.get("sub") for x in removed if x.get("sub")}:
+            if not any(x.get("sub") == sub for x in SESSIONS.values()):
+                # The user's last link on this server is gone (unlinked on
+                # the phone, signed out here, or the row was deleted):
+                # leave no trace of them on this server.
+                wipe_user_files(sub)
         try:
             owner = ""
             if os.path.exists(WIDGET_OWNER_FILE):
@@ -393,6 +399,145 @@ def _drop_sessions(pred) -> list[dict]:
         except Exception as e:
             print(f"[link] warning: widget cleanup failed: {e}", flush=True)
     return removed
+
+
+# ================= Server-side offline copy (per user) =================
+# The newest backup blob + profiles row each user's browser synced, so a new
+# browser (or one that can't reach Supabase) still opens with their data.
+# /app/users/<user_id>/offline.bin — 0700 dir, 0600 atomic file, encrypted
+# with a per-server key (users/_server/offline.key). Stdlib only: a
+# HMAC-SHA256 keystream (counter mode) + encrypt-then-MAC tag. Served only to
+# that user's own session; deleted when the user's last session here ends.
+OFFLINE_KEY_FILE = os.path.join(SERVER_DIR, "offline.key")
+OFFLINE_MAX_BYTES = 40 * 1024 * 1024
+_OFFLINE_LOCK = threading.Lock()
+
+
+def _offline_key() -> bytes:
+    with _OFFLINE_LOCK:
+        try:
+            with open(OFFLINE_KEY_FILE, "rb") as f:
+                k = f.read()
+            if len(k) == 64:
+                return k
+        except OSError:
+            pass
+        k = secrets.token_bytes(64)
+        _ensure_server_dir()
+        tmp = OFFLINE_KEY_FILE + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(k)
+        os.replace(tmp, OFFLINE_KEY_FILE)
+        return k
+
+
+def _keystream_xor(key: bytes, nonce: bytes, data: bytes) -> bytes:
+    if not data:
+        return b""
+    n = (len(data) + 31) // 32
+    ks = b"".join(hmac.new(key, nonce + i.to_bytes(8, "big"), hashlib.sha256).digest()
+                  for i in range(n))[:len(data)]
+    return (int.from_bytes(data, "big") ^ int.from_bytes(ks, "big")).to_bytes(len(data), "big")
+
+
+def _seal(plain: bytes, user_id: str) -> bytes:
+    k = _offline_key()
+    enc_key, mac_key = k[:32], k[32:]
+    nonce = secrets.token_bytes(16)
+    ct = _keystream_xor(enc_key, nonce, plain)
+    tag = hmac.new(mac_key, b"mbv1" + user_id.encode() + nonce + ct, hashlib.sha256).digest()
+    return b"mbv1" + nonce + tag + ct
+
+
+def _open_sealed(blob: bytes, user_id: str) -> bytes | None:
+    if len(blob) < 52 or blob[:4] != b"mbv1":
+        return None
+    k = _offline_key()
+    nonce, tag, ct = blob[4:20], blob[20:52], blob[52:]
+    want = hmac.new(k[32:], b"mbv1" + user_id.encode() + nonce + ct, hashlib.sha256).digest()
+    if not hmac.compare_digest(tag, want):
+        return None
+    return _keystream_xor(k[:32], nonce, ct)
+
+
+def _offline_dir(user_id: str) -> str:
+    return os.path.join(USERS_DIR, _safe_sub(user_id))
+
+
+def save_offline_copy(user_id: str, payload: dict) -> None:
+    d = _offline_dir(user_id)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    os.chmod(d, 0o700)
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    sealed = _seal(raw, user_id)
+    path = os.path.join(d, "offline.bin")
+    tmp = f"{path}.{threading.get_ident()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(sealed)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def load_offline_copy(user_id: str) -> dict | None:
+    try:
+        with open(os.path.join(_offline_dir(user_id), "offline.bin"), "rb") as f:
+            plain = _open_sealed(f.read(), user_id)
+        return json.loads(plain) if plain else None
+    except (OSError, ValueError):
+        return None
+
+
+def delete_offline_copy(user_id: str) -> None:
+    d = _offline_dir(user_id)
+    _remove_quiet(os.path.join(d, "offline.bin"))
+    try:
+        os.rmdir(d)
+    except OSError:
+        pass
+
+
+def wipe_user_files(user_id: str) -> None:
+    """Delete everything this server holds for a user: offline copy folder,
+    settings + Buddy chats (users/<id>.json), pending pair codes."""
+    if not user_id:
+        return
+    delete_offline_copy(user_id)
+    d = _offline_dir(user_id)
+    if os.path.isdir(d):
+        shutil.rmtree(d, ignore_errors=True)
+    _remove_quiet(os.path.join(USERS_DIR, _safe_sub(user_id) + ".json"))
+    for code in [c for c, p in list(PAIRINGS.items())
+                 if (p.get("session") or {}).get("user_id") == user_id]:
+        pp = PAIRINGS.pop(code, None) or {}
+        SESSIONS.pop(pp.get("sid") or "", None)
+    for sid in [k for k, x in list(SESSIONS.items()) if x.get("sub") == user_id]:
+        SESSIONS.pop(sid, None)
+    _save_sessions()
+    print(f"[wipe] removed all server data for a user", flush=True)
+
+
+def _link_watchdog() -> None:
+    """Catches unlinks that happened while this server was off or no browser
+    is open: each session's data token stops authenticating once the phone
+    deletes its mcp_tokens row -> wipe that user here."""
+    time.sleep(60)
+    while True:
+        seen = set()
+        for sess in list(SESSIONS.values()):
+            tok = sess.get("mcp_token")
+            if not tok or tok in seen:
+                continue
+            seen.add(tok)
+            try:
+                mcp_call("get_day_summary", {"date": _dt.date.today().isoformat()}, token=tok)
+            except MCPAuthError:
+                _drop_sessions(lambda x, t=tok: x.get("mcp_token") == t)
+            except Exception:
+                pass  # offline / backend hiccup: not a verdict
+        time.sleep(1800)
 
 
 class MCPAuthError(RuntimeError):
@@ -1158,8 +1303,9 @@ class Handler(BaseHTTPRequestHandler):
             for part in cookie.split(";"):
                 part = part.strip()
                 if part.startswith("mb_session="):
-                    if SESSIONS.pop(part[11:], None) is not None:
-                        _save_sessions()
+                    gone = SESSIONS.get(part[11:])
+                    if gone is not None:
+                        _drop_sessions(lambda x: x is gone)
             self._send(302, b"", extra={
                 "Location": "/",
                 "Set-Cookie": "mb_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax",
@@ -1188,6 +1334,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(401, b"login required", "text/plain")
             return
         sub = sess.get("sub", "")
+
+        if path == "/api/offline-copy":
+            # Only ever the caller's own copy (keyed by their session's sub).
+            copy = load_offline_copy(sub)
+            if not copy:
+                self._send(404, json.dumps({"error": "no offline copy"}).encode())
+                return
+            body = json.dumps(copy).encode()
+            self._send(200, body, extra={"Cache-Control": "no-store"})
+            return
 
         if path == "/api/preferences":
             # Theme is no longer server state: the browser reads it from the
@@ -1286,9 +1442,9 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"not found", "text/plain")
 
     # ---------- POST ----------
-    def _read_json_body(self) -> dict:
+    def _read_json_body(self, limit: int = 1_000_000) -> dict:
         length = int(self.headers.get("Content-Length", 0) or 0)
-        if length <= 0 or length > 1_000_000:
+        if length <= 0 or length > limit:
             return {}
         try:
             return json.loads(self.rfile.read(length).decode())
@@ -1469,19 +1625,13 @@ class Handler(BaseHTTPRequestHandler):
             if not ruser_id:
                 self._send(401, json.dumps({"error": "login required"}).encode())
                 return
-            removed = _drop_sessions(lambda x: x.get("sub") == ruser_id)
+            pend_sids = [p.get("sid") for p in PAIRINGS.values()
+                         if (p.get("session") or {}).get("user_id") == ruser_id]
+            removed = [x for x in SESSIONS.values() if x.get("sub") == ruser_id]
+            removed += [SESSIONS[k] for k in pend_sids if k in SESSIONS and SESSIONS[k] not in removed]
             revoked = len(removed)
-            # Only this user's pending pairings (claimed, not yet picked up).
-            pend = [c for c, p in PAIRINGS.items()
-                    if (p.get("session") or {}).get("user_id") == ruser_id]
-            for code in pend:
-                pp = PAIRINGS.pop(code, None) or {}
-                ps = SESSIONS.pop(pp.get("sid") or "", None)
-                if ps:
-                    removed.append(ps)
-                    revoked += 1
-            if pend:
-                _save_sessions()
+            _drop_sessions(lambda x: x.get("sub") == ruser_id)
+            wipe_user_files(ruser_id)
             # Delete THIS server's dashboard rows for the user (other servers
             # the same account linked stay linked).
             if rtoken:
@@ -1556,23 +1706,26 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/session/logout":
-            # Dashboard sign-out: drop this browser's session and delete its
-            # dashboard row (with the user's own token) so the phone's
-            # "Linked dashboards" list updates.
+            # Dashboard sign-out = full wipe for this user on this server:
+            # every session, settings, chats, offline copy, widget, and this
+            # server's dashboard rows (so the phone's list updates).
             body = self._read_json_body()
             atoken = str(body.get("access_token", "")).strip()
             sess = self._get_session()
-            sid = getattr(self, "_sid", None) if sess else None
-            if sess and sid:
-                _drop_sessions(lambda x: x is sess)
+            if sess:
+                user_id = sess.get("sub", "")
+                mine = [x for x in SESSIONS.values() if x.get("sub") == user_id]
                 if atoken:
                     try:
                         uid = str(_supabase_get_user(atoken).get("id", ""))
                     except Exception:
                         uid = ""
-                    if uid and uid == sess.get("sub"):
-                        _delete_link_row(atoken, uid, sess.get("link_id", ""),
-                                         sess.get("token_hash", ""))
+                    if uid and uid == user_id:
+                        for x in mine:
+                            _delete_link_row(atoken, uid, x.get("link_id", ""),
+                                             x.get("token_hash", ""))
+                _drop_sessions(lambda x: x.get("sub") == user_id)
+                wipe_user_files(user_id)
             self._send(200, json.dumps({"ok": True}).encode(), extra={
                 "Set-Cookie": "mb_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"})
             return
@@ -1583,6 +1736,30 @@ class Handler(BaseHTTPRequestHandler):
             self._send(401, json.dumps({"error": "login required"}).encode())
             return
         sub = sess.get("sub", "")
+
+        if path == "/api/offline-copy":
+            body = self._read_json_body(OFFLINE_MAX_BYTES)
+            backup = body.get("backup")
+            if not isinstance(backup, dict) or not isinstance(backup.get("data"), dict):
+                self._send(400, json.dumps({"error": "backup required"}).encode())
+                return
+            prof = body.get("profile") if isinstance(body.get("profile"), dict) else None
+            if prof and str(prof.get("id", sub)) != sub:
+                self._send(403, json.dumps({"error": "profile mismatch"}).encode())
+                return
+            try:
+                save_offline_copy(sub, {
+                    "backup": {"data": backup["data"],
+                               "updated_at": str(backup.get("updated_at") or "")},
+                    "profile": prof,
+                    "saved_at": int(time.time() * 1000),
+                })
+            except OSError as e:
+                print(f"[offline] save failed: {e}", flush=True)
+                self._send(500, json.dumps({"error": "couldn't save"}).encode())
+                return
+            self._send(200, json.dumps({"ok": True}).encode())
+            return
 
         if path == "/api/session/heartbeat":
             # Periodic while the dashboard is open: confirm this browser's
@@ -1749,6 +1926,7 @@ if __name__ == "__main__":
     os.makedirs(USERS_DIR, exist_ok=True)
     # Threaded: a slow Buddy AI reply must never block the dashboard shell,
     # pairing polls, or other tabs.
+    threading.Thread(target=_link_watchdog, daemon=True).start()
     ThreadingHTTPServer.daemon_threads = True
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"Micro Buddy dashboard on :{PORT} (QR app-pairing auth)")
