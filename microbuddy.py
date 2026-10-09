@@ -117,7 +117,7 @@ APP_BUNDLE_ID = _read_secret("APPLE_APP_BUNDLE_ID", ".apple_app_id")
 # reboot. Unlink (/api/pair/revoke) and /logout clear it and re-save, so a
 # wiped login can never be resurrected by a restart.
 SESSIONS: dict[str, dict] = {}
-DASHBOARD_VERSION = "1.1.6"
+DASHBOARD_VERSION = "1.1.7"
 SESSIONS_FILE = os.path.join(BASE_DIR, ".sessions.json")
 _rpc_id = 0
 
@@ -188,20 +188,21 @@ def _supabase_get_user(access_token: str) -> dict:
 
 def _supabase_rest(method: str, path: str, access_token: str,
                    body: dict | None = None, query: str = "",
-                   prefer: str = "return=minimal") -> dict | str | None:
+                   prefer: str | None = "return=minimal") -> dict | str | None:
     """PostgREST call with the user's own session (RLS-enforced).
 
-    prefer defaults to return=minimal (no body needed). Pass
-    return=representation when the response body carries the result
-    (e.g. RPC calls that return a value).
+    prefer defaults to return=minimal (no body needed). Pass None to omit
+    the Prefer header entirely (PostgREST defaults to returning the result,
+    which is what the phone app does for RPC calls).
     """
     data = json.dumps(body).encode() if body is not None else None
     headers = {
         "apikey": SUPABASE_ANON_KEY,
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
-        "Prefer": prefer,
     }
+    if prefer is not None:
+        headers["Prefer"] = prefer
     req = urllib.request.Request(
         f"{SUPABASE_URL}/rest/v1/{path}{query}",
         data=data, headers=headers, method=method,
@@ -248,7 +249,7 @@ def _mint_mcp_token(user_id: str, access_token: str) -> str:
         print(f"[pair] warning: couldn't clean old dashboard tokens: {e}", flush=True)
     token = _supabase_rest("POST", "rpc/create_mcp_token", access_token,
                            body={"p_label": "dashboard"},
-                           prefer="return=representation")
+                           prefer=None)
     if not token or not isinstance(token, str):
         raise ValueError("create_mcp_token returned no token")
     return token
