@@ -1,6 +1,6 @@
 "use strict";
 /* ============ settings.js — Settings pages: Buddy AI, Appearance, This dashboard ============
- * Appearance: the phone is the source of truth. "Match iPhone" (default)
+ * Appearance: the phone is the source of truth. "Match my phone" (default)
  *   applies profile.themePreference from the synced backup blob; when the
  *   phone hasn't shared a theme (or the switch is off) the manual pick here
  *   is used. The manual pick is stored only in this browser (IndexedDB) and
@@ -12,7 +12,7 @@
 const SettingsUI = (() => {
   // Exact titles/subtitles from ThemePreference.swift.
   const THEMES = [
-    { id: "auto", name: "Auto", desc: "Follows your phone's appearance",
+    { id: "auto", name: "Auto", desc: "Follows your computer's Light or Dark Mode",
       swatch: "linear-gradient(135deg,#f2f2f7 0 50%,#0b1220 50% 100%)" },
     { id: "light", name: "Light", desc: "Always the bright look",
       swatch: "linear-gradient(160deg,#ffffff,#e9edf5)" },
@@ -31,29 +31,29 @@ const SettingsUI = (() => {
   // ---------------- Appearance ----------------
   async function renderAppearance(box) {
     if (!box) return;
-    const st = await SyncEngine.themeState();
+    const st = await SyncEngine.themeState(true);
     const follow = st.mode !== "manual";
     let status;
     if (st.phone) {
       status = follow
-        ? `Matching your iPhone: <b>${esc(TITLE[st.phone] || st.phone)}</b>. Change it on the phone and this dashboard follows on the next sync.`
-        : `Your iPhone uses <b>${esc(TITLE[st.phone] || st.phone)}</b>. This dashboard is using its own pick below.`;
+        ? `Matching your phone: <b>${esc(TITLE[st.phone] || st.phone)}</b>. Change it on the phone and this dashboard follows on the next sync.`
+        : `Your phone uses <b>${esc(TITLE[st.phone] || st.phone)}</b>. This dashboard is using its own pick below.`;
     } else {
       status = follow
-        ? `Your iPhone hasn't shared its theme yet (needs the app update that syncs it), so the pick below is used until it does.`
+        ? `Your phone hasn't shared its theme yet, so Auto is used (matches your computer's Light or Dark Mode).`
         : `Using the pick below on this dashboard.`;
     }
     box.innerHTML =
       `<div class="panel"><div class="settings-row static">` +
-      `<span class="sr-ico">${I("phone")}</span><span class="sr-text"><span class="sr-title">Match iPhone</span>` +
+      `<span class="sr-ico">${I("phone")}</span><span class="sr-text"><span class="sr-title">Match my phone</span>` +
       `<span class="sr-sub">Use whatever theme your phone is set to</span></span>` +
       `<label class="switch"><input type="checkbox" id="theme-follow"${follow ? " checked" : ""}><span></span></label></div>` +
       `<div class="hint" id="theme-status">${status}</div></div>` +
       `<div class="panel"><div class="sec-head"><div class="grow"><div class="sec-title">Theme</div>` +
-      `<div class="sec-sub">Pick how Micro Buddy looks${follow && st.phone ? " — picking one turns off Match iPhone" : ""}</div></div></div>` +
+      `<div class="sec-sub">Pick how Micro Buddy looks${follow ? " — turn off Match my phone to choose your own" : ""}</div></div></div>` +
       `<div class="theme-grid">` + THEMES.map(t => {
         const sel = t.id === st.effective;
-        return `<button class="theme-card${sel ? " selected" : ""}" data-theme-id="${t.id}">` +
+        return `<button class="theme-card${sel ? " selected" : ""}" data-theme-id="${t.id}"${follow ? " disabled" : ""}>` +
           `<span class="theme-swatch" style="background:${t.swatch}"></span>` +
           `<span class="theme-name">${esc(t.name)}${sel ? " " + I("check-circle", { size: 16, cls: "ico accent" }) : ""}</span>` +
           `<span class="theme-desc">${esc(t.desc)}</span></button>`;
@@ -66,6 +66,7 @@ const SettingsUI = (() => {
     });
     box.querySelectorAll(".theme-card").forEach(btn => {
       btn.addEventListener("click", async () => {
+        if (btn.disabled) return;
         await SyncEngine.setTheme(btn.dataset.themeId); // manual mode
         renderAppearance(box);
       });

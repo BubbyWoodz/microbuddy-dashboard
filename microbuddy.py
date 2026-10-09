@@ -45,6 +45,8 @@ API (auth required unless noted):
                        browser sessions, and the widget token)
   GET  /logout
   GET  /api/preferences        {ai_config} (api_key masked; no theme)
+  GET  /api/appearance         {match_phone, theme}  (per user)
+  POST /api/appearance         {match_phone?, theme?}
   GET  /api/ai-config          {provider, server_url, model, api_key_set}
   POST /api/ai-config          {provider, server_url, model, api_key?}
   GET  /api/chat               [{id, title, updated_at, message_count}] (session list)
@@ -137,7 +139,7 @@ APP_BUNDLE_ID = _read_secret("APPLE_APP_BUNDLE_ID", ".apple_app_id")
 # reboot. Unlink (/api/pair/revoke) and /logout clear it and re-save, so a
 # wiped login can never be resurrected by a restart.
 SESSIONS: dict[str, dict] = {}
-DASHBOARD_VERSION = "2.0.9"
+DASHBOARD_VERSION = "2.0.10"
 # Server state lives on the mounted users volume (/app/users), NOT in the
 # image's /app: an app update replaces the container, and anything outside a
 # volume (the old /app/.sessions.json, /app/.widget_token) vanished with it,
@@ -557,8 +559,14 @@ def _user_path(sub: str) -> str:
     return os.path.join(USERS_DIR, _safe_sub(sub) + ".json")
 
 
+THEMES = ("auto", "light", "dark", "terminal", "modern", "win95")
+
+
 def default_prefs() -> dict:
     return {
+        # Settings > Appearance, per user so it follows them across browsers.
+        # match_phone: use profile.themePreference from the phone's backup.
+        "appearance": {"match_phone": True, "theme": "auto"},
         "ai_config": {
             "provider": "disabled",
             "server_url": "",
@@ -585,6 +593,12 @@ def load_prefs(sub: str) -> dict:
         with open(_user_path(sub)) as f:
             stored = json.load(f)
         if isinstance(stored, dict):
+            ap = stored.get("appearance")
+            if isinstance(ap, dict):
+                if isinstance(ap.get("match_phone"), bool):
+                    prefs["appearance"]["match_phone"] = ap["match_phone"]
+                if ap.get("theme") in THEMES:
+                    prefs["appearance"]["theme"] = ap["theme"]
             ac = stored.get("ai_config")
             if isinstance(ac, dict):
                 for k in ("provider", "server_url", "model", "api_key"):
@@ -1352,6 +1366,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(public_prefs(prefs)).encode())
             return
 
+        if path == "/api/appearance":
+            self._send(200, json.dumps(load_prefs(sub)["appearance"]).encode(),
+                       extra={"Cache-Control": "no-store"})
+            return
+
         if path == "/api/ai-config":
             self._send(200, json.dumps(public_ai_config(load_prefs(sub))).encode())
             return
@@ -1796,6 +1815,18 @@ class Handler(BaseHTTPRequestHandler):
             if sess.get("mcp_token"):
                 self._own_widget(uid, sess["mcp_token"])
             self._send(200, json.dumps({"ok": True, "checked": True, "linked": True}).encode())
+            return
+
+        if path == "/api/appearance":
+            body = self._read_json_body()
+            prefs = load_prefs(sub)
+            ap = prefs["appearance"]
+            if isinstance(body.get("match_phone"), bool):
+                ap["match_phone"] = body["match_phone"]
+            if body.get("theme") in THEMES:
+                ap["theme"] = body["theme"]
+            save_prefs(sub, prefs)
+            self._send(200, json.dumps(ap).encode())
             return
 
         if path == "/api/preferences":

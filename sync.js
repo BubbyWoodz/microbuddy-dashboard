@@ -8,7 +8,7 @@
  *    both in IndexedDB. No more per-day MCP crawling.
  *  - Edits go through queueWrite() (optimistic, conflict-checked, offline
  *    queue) and are sanitized so the phone can always decode them.
- *  - Theme: the phone's profile.themePreference wins ("Match iPhone");
+ *  - Theme: the phone's profile.themePreference wins ("Match my phone");
  *    otherwise the manual pick saved in this browser.
  * Sync status + "last synced" timestamp are shown in the header.
  */
@@ -202,7 +202,7 @@ const SyncEngine = (() => {
 
   // ---- theme ----
   // The phone is the source of truth: profile.themePreference in the backup
-  // blob ("Match iPhone", the default). When the phone hasn't shared one
+  // blob ("Match my phone", the default). When the phone hasn't shared one
   // (older app builds) or the user turned matching off, the manual pick
   // saved in this browser is used. Nothing theme-related lives on the server.
   const VALID_THEMES = ["auto", "light", "dark", "terminal", "modern", "win95"];
@@ -229,16 +229,44 @@ const SyncEngine = (() => {
       d.themePreference ?? d.theme ?? null);
   }
 
-  async function themeState() {
-    const mode = (await MBDB.kvGet("themeMode").catch(() => null)) || "phone";
-    const manual = normalizeTheme(await MBDB.kvGet("theme").catch(() => null)) || "auto";
+  // Toggle + manual pick are per user on the server (follow them across
+  // browsers, wiped on unlink); IndexedDB holds a cache for offline starts.
+  async function loadAppearance(refresh) {
+    let ap = await MBDB.kvGet("appearance").catch(() => null);
+    if (refresh || !ap) {
+      try {
+        const r = await fetch("/api/appearance", { credentials: "same-origin", cache: "no-store" });
+        if (r.ok) { ap = await r.json(); await MBDB.kvSet("appearance", ap).catch(() => {}); }
+      } catch (e) {}
+    }
+    return {
+      match_phone: !(ap && ap.match_phone === false),
+      theme: normalizeTheme(ap && ap.theme) || "auto",
+    };
+  }
+  async function saveAppearance(patch) {
+    const cur = await loadAppearance(false);
+    const next = Object.assign({}, cur, patch);
+    await MBDB.kvSet("appearance", next).catch(() => {});
+    try {
+      await fetch("/api/appearance", { method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) });
+    } catch (e) {}
+    return next;
+  }
+
+  async function themeState(refresh) {
+    const ap = await loadAppearance(refresh);
+    const mode = ap.match_phone ? "phone" : "manual";
+    const manual = ap.theme;
     const phone = blobTheme(await getLocalBackup().catch(() => null));
-    const effective = (mode === "phone" && phone) ? phone : manual;
+    // Matching with nothing shared yet: Auto (follows the computer).
+    const effective = mode === "phone" ? (phone || "auto") : manual;
     return { mode, manual, phone, effective };
   }
 
   async function syncPreferences() {
-    const st = await themeState();
+    const st = await themeState(true);
     applyTheme(st.effective);
     return st.effective;
   }
@@ -302,19 +330,19 @@ const SyncEngine = (() => {
     });
   } catch (e) {}
 
-  // Manual pick from Settings > Appearance. Stays in this browser — the
-  // phone owns the shared theme, so the blob is never written for this.
+  // Manual pick (only used with "Match my phone" off). Stored per user on
+  // the server; the phone owns profile.themePreference, never written here.
   async function setTheme(theme) {
     const t = normalizeTheme(theme) || "auto";
-    await MBDB.kvSet("theme", t).catch(() => {});
-    await MBDB.kvSet("themeMode", "manual").catch(() => {});
-    applyTheme(t);
+    await saveAppearance({ theme: t });
+    const st = await themeState();
+    applyTheme(st.effective);
     return t;
   }
 
-  /// Turn "Match iPhone" on/off; returns the theme now in effect.
+  /// Turn "Match my phone" on/off; returns the new theme state.
   async function setThemeMode(mode) {
-    await MBDB.kvSet("themeMode", mode === "manual" ? "manual" : "phone").catch(() => {});
+    await saveAppearance({ match_phone: mode !== "manual" });
     const st = await themeState();
     applyTheme(st.effective);
     return st;
@@ -507,7 +535,9 @@ const SyncEngine = (() => {
       case "updateProfile": {
         // Shallow-merge into data.profile (icsURL, reminders, lastSyncedAt, …).
         if (!data.profile) data.profile = {};
-        Object.assign(data.profile, op.updates || {});
+        const upd = Object.assign({}, op.updates || {});
+        delete upd.themePreference; // the phone owns it
+        Object.assign(data.profile, upd);
         return true;
       }
       case "setJournalEntry": {
@@ -1128,6 +1158,13 @@ const SyncEngine = (() => {
           let r;
           try { r = replayOp(backup, op); } catch (e) { r = { applied: false, conflicts: 1, skipped: true }; }
           if (r.conflicts) skipped.push({ type: op.type, id: (op.base && op.base.id) || "", ts: op.ts || q.ts || 0, partial: !r.skipped });
+        }
+        // themePreference is phone-owned: always write back exactly what the
+        // server copy has, whatever the merge did.
+        if (backup.data.profile) {
+          const ph = data && data.profile ? data.profile.themePreference : undefined;
+          if (ph === undefined) delete backup.data.profile.themePreference;
+          else backup.data.profile.themePreference = ph;
         }
         try {
           const savedAt = await SB.saveBackup(backup.data, updated_at === undefined ? null : updated_at);
