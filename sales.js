@@ -3,8 +3,11 @@
  * Everything is computed from the backup blob (the phone's source of truth)
  * with PayEngine — no MCP round-trips, so it works offline and matches iOS.
  *
- *   Left column : Today (hero or empty state) · Search (text + min/max $) · Pay period
- *   Right column: Every day you logged | Pay periods | Products   (or search Results)
+ *   Mirrors the iPhone Sales tab:
+ *   Top row : Log today's sales  |  Find a product (text + min/max $)
+ *   Below   : search results (while searching) or a grid of day cards by month
+ *   The pay-period breakdown is no longer on this page; SalesUI.renderPay(el)
+ *   draws it into a sheet when Home's Pay period widget is clicked.
  *
  * Parent wiring (dashboard.html):
  *   SalesUI.onOpenDay  = (dayKey, ticketId?) => DayDetailUI.open(dayKey, {highlightTicketId})
@@ -17,10 +20,8 @@ const SalesUI = (() => {
   const I = (n, o) => (typeof Icon === "function" ? Icon(n, o) : "");
   const hooks = { onOpenDay: null, onAddSale: null, onPaste: null };
   const state = {
-    view: "days", // days | pay | products
     query: "", min: "", max: "",
     period: null, // {start,end,payday}
-    productSort: "count",
     data: null,
   };
   let host = null;
@@ -47,6 +48,7 @@ const SalesUI = (() => {
     return money(v);
   }
   const fmtLong = k => localDate(k).toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric", year: "numeric" });
+  const fmtSold = k => localDate(k).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
   const fmtShort = k => localDate(k).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 
   async function loadData() {
@@ -106,12 +108,14 @@ const SalesUI = (() => {
   // ---- Search ----
   function searchHTML() {
     const active = state.query || state.min || state.max;
-    return `<div class="panel"><div class="search-box">${I("search")}` +
-      `<input id="sales-q" type="search" placeholder="Search a product or brand" value="${esc(state.query)}" autocomplete="off">` +
-      (active ? `<button class="icon-btn" id="sales-clear" aria-label="Clear search">${I("close")}</button>` : "") + `</div>` +
-      `<div class="field-row" style="margin-top:10px">` +
-      `<div class="field"><label>Min $</label><input id="sales-min" inputmode="decimal" placeholder="—" value="${esc(state.min)}"></div>` +
-      `<div class="field"><label>Max $</label><input id="sales-max" inputmode="decimal" placeholder="—" value="${esc(state.max)}"></div></div></div>`;
+    return `<div class="panel sales-search"><div class="sec-head"><div class="grow"><div class="sec-title">Find a product</div>` +
+      `<div class="sec-sub">Search everything you've sold by product, brand or price</div></div>` +
+      (active ? `<button class="link-btn" id="sales-clear">${I("close", { size: 16 })} Clear</button>` : "") + `</div>` +
+      `<div class="search-box">${I("search")}` +
+      `<input id="sales-q" type="search" placeholder="Product or brand, e.g. Keychron" value="${esc(state.query)}" autocomplete="off"></div>` +
+      `<div class="field-row" style="margin-top:12px">` +
+      `<div class="field"><label for="sales-min">Min price</label><div class="input-prefix"><span>$</span><input id="sales-min" inputmode="decimal" placeholder="0" value="${esc(state.min)}"></div></div>` +
+      `<div class="field"><label for="sales-max">Max price</label><div class="input-prefix"><span>$</span><input id="sales-max" inputmode="decimal" placeholder="Any" value="${esc(state.max)}"></div></div></div></div>`;
   }
 
   function searchResults() {
@@ -135,52 +139,65 @@ const SalesUI = (() => {
     const res = searchResults();
     const total = res.reduce((s, r) => s + lineRev(r.line), 0);
     let html = `<div class="panel"><div class="sec-head"><div class="grow"><div class="sec-title">Results</div>` +
-      `<div class="sec-sub">${res.length} matching line${res.length === 1 ? "" : "s"} · ${money(total)}</div></div></div>`;
+      `<div class="sec-sub">${res.length} matching line${res.length === 1 ? "" : "s"} · ${money(total)} · click one to open its day</div></div></div>`;
     if (!res.length) {
       return html + `<div class="empty-state"><div class="empty-ico">${I("search", { size: 30 })}</div><div class="t">Nothing found</div>` +
         `<p>Try a different product, brand, or price range.</p></div></div>`;
     }
-    html += `<div class="table-wrap"><table class="tbl"><thead><tr><th></th><th>Product</th><th>Brand</th><th>Day</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Total</th></tr></thead><tbody>`;
+    html += `<div class="table-wrap"><table class="tbl"><thead><tr><th></th><th>Product</th><th>Brand</th><th>Date sold</th><th class="r">Qty</th><th class="r">Price</th></tr></thead><tbody>`;
     for (const r of res.slice(0, 200)) {
       const l = r.line, k = keyOf(r.day);
       html += `<tr class="clickable" data-open="${esc(k)}" data-ticket="${esc(r.ticket.id || "")}">` +
         `<td style="width:28px" class="${l.isReturn ? "accent" : "navy"}">${I(l.isReturn ? "return" : "box", { size: 16 })}</td>` +
         `<td><b>${esc(l.product || "")}</b></td><td class="muted">${esc(l.brand || KIND_SHORT[l.kind] || "")}</td>` +
-        `<td class="muted">${esc(fmtShort(k))}</td><td class="r">×${num(l.quantity || 0)}</td>` +
-        `<td class="r">${money(Number(l.unitPrice) || 0)}</td><td class="r ${l.isReturn ? "red" : ""}" style="font-weight:800">${money(lineRev(l))}</td></tr>`;
+        `<td class="muted">${esc(fmtSold(k))}</td><td class="r">${num(l.quantity || 0)}</td>` +
+        `<td class="r ${l.isReturn ? "red" : ""}" style="font-weight:800">${l.isReturn ? "-" : ""}${money(Number(l.unitPrice) || 0)}</td></tr>`;
     }
     html += `</tbody></table></div>`;
     if (res.length > 200) html += `<div class="foot">Showing the first 200 of ${res.length}.</div>`;
     return html + `</div>`;
   }
 
-  // ---- Every day you logged ----
+  // ---- Every day you logged: month groups of compact day cards ----
+  // Whole dollars under $1k so the card meta line stays on one line.
+  const soldShort = n => Math.abs(Number(n) || 0) >= 1000 ? compact(n) : (n < 0 ? "-$" : "$") + Math.round(Math.abs(Number(n) || 0)).toLocaleString("en-US");
+  function dayCardHTML(d) {
+    const { table } = state.data;
+    const k = keyOf(d), dt = localDate(k);
+    const com = PayEngine.dayCommission(d, table), rt = returnsTotal(d);
+    const off = (Number(d.scheduledHours) || 0) === 0;
+    const meta = `${soldShort(dayRevenue(d))} sold · ${num(itemsSold(d))} items · ${off ? "Day off" : PayEngine.workedHours(d).toFixed(1) + "h"}`;
+    return `<button class="day-card" data-open="${esc(k)}" title="Open ${esc(fmtLong(k))}">` +
+      `<span class="date-badge"><span class="m">${esc(dt.toLocaleDateString("en-US", { month: "short" }).toUpperCase())}</span><span class="d">${dt.getDate()}</span></span>` +
+      `<span class="dc-body"><span class="dc-top"><span class="dc-dow">${esc(dt.toLocaleDateString("en-US", { weekday: "long" }))}</span>` +
+      `<span class="dc-com ${com < -0.005 ? "red" : "money"}">${money(com)}</span></span>` +
+      `<span class="dc-meta">${esc(meta)}</span>` +
+      (rt > 0 ? `<span class="dc-ret">${I("return", { size: 12 })}-${esc(compact(rt))} returns</span>` : "") +
+      `</span></button>`;
+  }
+
   function daysHTML() {
     const { days, table } = state.data;
     const logged = days.filter(d => !PayEngine.isEmptyDay(d));
-    let html = `<div class="panel"><div class="sec-head"><div class="grow"><div class="sec-title">Every day you logged</div>` +
-      `<div class="sec-sub">Days off count too — sticker sales and returns</div></div>` +
-      `<button class="btn sm ghost" id="sales-other-day">${I("calendar-plus", { size: 16 })} Add</button></div>`;
     if (!logged.length) {
-      return html + `<div class="empty-state"><div class="empty-ico">${I("calendar", { size: 30 })}</div><div class="t">Your history starts today</div>` +
+      return `<div class="panel"><div class="empty-state"><div class="empty-ico">${I("calendar", { size: 30 })}</div><div class="t">Your history starts today</div>` +
         `<p>Every day you log shows up here with its sales and stats.</p></div></div>`;
     }
-    html += `<div class="day-list">`;
-    let lastMonth = "";
+    const groups = [];
     for (const d of logged) {
-      const k = keyOf(d), dt = localDate(k);
+      const dt = localDate(keyOf(d));
       const month = dt.toLocaleDateString("en-US", { month: "long", year: "numeric" });
-      if (month !== lastMonth) { html += `<div class="label" style="margin:12px 4px 6px">${esc(month)}</div>`; lastMonth = month; }
-      const com = PayEngine.dayCommission(d, table), rt = returnsTotal(d);
-      const hrs = (Number(d.scheduledHours) || 0) === 0 ? "Day off" : PayEngine.workedHours(d).toFixed(1) + "h";
-      html += `<button class="day-row" data-open="${esc(k)}">` +
-        `<span class="date-badge"><span class="m">${esc(dt.toLocaleDateString("en-US", { month: "short" }).toUpperCase())}</span><span class="d">${dt.getDate()}</span></span>` +
-        `<span class="grow"><span class="dow">${esc(dt.toLocaleDateString("en-US", { weekday: "long" }))}</span>` +
-        `<span class="meta">${compact(dayRevenue(d))} sold · ${num(itemsSold(d))} items · ${hrs} · ${(d.tickets || []).length} tickets</span></span>` +
-        `<span class="amt"><b class="${com < -0.005 ? "red" : "money"}">${money(com)}</b>` +
-        (rt > 0 ? `<span class="ret">-${compact(rt)}</span>` : "") + `</span>${I("chevron-right", { size: 16, cls: "ico muted" })}</button>`;
+      if (!groups.length || groups[groups.length - 1].month !== month) groups.push({ month, days: [] });
+      groups[groups.length - 1].days.push(d);
     }
-    return html + `</div></div>`;
+    let html = `<div class="sales-days">`;
+    for (const g of groups) {
+      const com = g.days.reduce((s, d) => s + PayEngine.dayCommission(d, table), 0);
+      html += `<div class="month-head"><span class="canvas-title">${esc(g.month)}</span>` +
+        `<span class="mh-sub">${g.days.length} day${g.days.length === 1 ? "" : "s"} · ${money(com)} commission</span></div>` +
+        `<div class="day-cards">${g.days.map(dayCardHTML).join("")}</div>`;
+    }
+    return html + `</div>`;
   }
 
   // ---- Pay ----
@@ -254,135 +271,66 @@ const SalesUI = (() => {
     return html + `</tbody></table></div></div>`;
   }
 
-  // ---- Products ----
-  function productsHTML() {
-    const { days, table } = state.data;
-    const map = new Map();
-    for (const d of days) {
-      for (const l of lines(d)) {
-        const name = String(l.product || "").trim() || "Unlabeled";
-        const key = (l.sku ? "sku:" + l.sku : "n:" + name.toLowerCase());
-        const e = map.get(key) || { name, brand: l.brand || "", sku: l.sku || "", kind: l.kind, sold: 0, returned: 0, revenue: 0, commission: 0, last: "", price: 0 };
-        const q = Number(l.quantity) || 0;
-        if (l.isReturn) e.returned += q; else e.sold += q;
-        e.revenue += lineRev(l);
-        e.commission += PayEngine.lineCommission({ isReturn: !!l.isReturn, unitPrice: Number(l.unitPrice) || 0, quantity: q, kind: l.kind }, table);
-        const k = keyOf(d);
-        if (k > e.last) { e.last = k; e.price = Number(l.unitPrice) || 0; }
-        if (!e.brand && l.brand) e.brand = l.brand;
-        map.set(key, e);
-      }
-    }
-    const rows = [...map.values()];
-    const sorters = {
-      count: (a, b) => b.sold - a.sold || b.revenue - a.revenue,
-      revenue: (a, b) => b.revenue - a.revenue,
-      commission: (a, b) => b.commission - a.commission,
-      recent: (a, b) => a.last < b.last ? 1 : -1,
-    };
-    rows.sort(sorters[state.productSort] || sorters.count);
-    let html = `<div class="panel"><div class="sec-head"><div class="grow"><div class="sec-title">Products</div>` +
-      `<div class="sec-sub">${rows.length} products you've rung up · from your logged tickets</div></div>` +
-      `<select id="sales-prod-sort" style="width:auto">` +
-      [["count", "Most sold"], ["revenue", "Most money"], ["commission", "Most commission"], ["recent", "Most recent"]]
-        .map(([v, t]) => `<option value="${v}"${state.productSort === v ? " selected" : ""}>${t}</option>`).join("") + `</select></div>`;
-    if (!rows.length) return html + `<div class="empty">No products yet — log a sale and it lands here.</div></div>`;
-    html += `<div class="table-wrap"><table class="tbl"><thead><tr><th>Product</th><th>Brand</th><th>SKU</th><th>Type</th><th class="r">Sold</th><th class="r">Returned</th><th class="r">Last price</th><th class="r">Money</th><th class="r">Commission</th><th class="r">Last sold</th></tr></thead><tbody>`;
-    for (const r of rows.slice(0, 300)) {
-      html += `<tr${r.last ? ` class="clickable" data-open="${esc(r.last)}"` : ""}><td><b>${esc(r.name)}</b></td><td class="muted">${esc(r.brand)}</td>` +
-        `<td class="muted num">${esc(r.sku)}</td><td class="muted">${esc(KIND_SHORT[r.kind] || "")}</td>` +
-        `<td class="r">${num(r.sold)}</td><td class="r ${r.returned ? "red" : "muted"}">${r.returned ? num(r.returned) : "—"}</td>` +
-        `<td class="r">${money(r.price)}</td><td class="r">${money(r.revenue)}</td><td class="r money">${money(r.commission)}</td>` +
-        `<td class="r muted">${r.last ? esc(fmtShort(r.last)) : ""}</td></tr>`;
-    }
-    return html + `</tbody></table></div></div>`;
-  }
-
-  // ---- Off-day picker ----
-  function otherDayHTML() {
-    return `<div class="overlay" id="sales-otherday"><div class="modal-card"><h2>Log a sale on another day</h2>` +
-      `<div class="field"><label>Day</label><input type="date" id="sales-otherday-date" value="${localKey()}" max="${localKey()}"></div>` +
-      `<p class="caption" style="margin:10px 0 0">Sticker sales and returns land on days off too — the day logs with zero hours, commission only, so pay and stats stay honest.</p>` +
-      `<div class="modal-actions"><button class="btn ghost" data-x>Cancel</button><button class="btn ghost" data-go="open">Open day</button><button class="btn primary" data-go="add">${I("plus")} Add a sale</button></div></div></div>`;
-  }
-
   // ---- Render ----
+  const isSearching = () => !!(state.query || state.min || state.max);
+
   function paint() {
     if (!host) return;
-    const searching = !!(state.query || state.min || state.max);
-    const seg = `<div class="segmented">` + [["days", "Every day", "calendar"], ["pay", "Pay periods", "wallet"], ["products", "Products", "box"]]
-      .map(([id, t, ic]) => `<button data-sview="${id}" class="${!searching && state.view === id ? "active" : ""}">${I(ic, { size: 16 })}<span>${t}</span></button>`).join("") + `</div>`;
-    const right = searching ? resultsHTML() : state.view === "pay" ? payTableHTML() : state.view === "products" ? productsHTML() : daysHTML();
-    host.innerHTML = `<div class="page-head"><div><h2>Sales</h2><div class="page-sub">${esc(fmtLong(localKey()))}</div></div><div class="spacer"></div>${seg}` +
-      `<button class="btn ghost" id="sales-other-day-2">${I("calendar-plus")} Log another day</button>` +
-      `<button class="btn primary" data-add="${localKey()}">${I("plus")} Add ticket</button></div>` +
-      `<div class="grid"><div class="col-5 stack">${todayHTML()}${searchHTML()}${payPanelHTML()}</div>` +
-      `<div class="col-7 stack" id="sales-right">${right}</div></div>`;
+    host.innerHTML = `<div class="page-head"><div><h2>Sales</h2><div class="page-sub">${esc(fmtLong(localKey()))}</div></div></div>` +
+      `<div class="grid sales-top"><div class="col-6">${todayHTML()}</div><div class="col-6">${searchHTML()}</div></div>` +
+      `<div id="sales-main">${isSearching() ? resultsHTML() : daysHTML()}</div>`;
     bind();
   }
 
-  function repaintRight() {
-    const r = host && host.querySelector("#sales-right");
-    if (!r) return paint();
-    const searching = !!(state.query || state.min || state.max);
-    r.innerHTML = searching ? resultsHTML() : state.view === "pay" ? payTableHTML() : state.view === "products" ? productsHTML() : daysHTML();
-    host.querySelectorAll("[data-sview]").forEach(b => b.classList.toggle("active", !searching && b.dataset.sview === state.view));
-    bindRight(r);
+  function repaintMain() {
+    const m = host && host.querySelector("#sales-main");
+    if (!m) return paint();
+    m.innerHTML = isSearching() ? resultsHTML() : daysHTML();
+    bindOpen(m);
+    // Show/hide the Clear link without repainting the inputs (keeps focus).
+    const head = host.querySelector(".sales-search .sec-head");
+    const clr = host.querySelector("#sales-clear");
+    if (isSearching() && !clr && head) {
+      head.insertAdjacentHTML("beforeend", `<button class="link-btn" id="sales-clear">${I("close", { size: 16 })} Clear</button>`);
+      host.querySelector("#sales-clear").addEventListener("click", clearSearch);
+    } else if (!isSearching() && clr) clr.remove();
   }
 
   function openDay(k, ticket) { if (hooks.onOpenDay) hooks.onOpenDay(k, ticket || null); }
-
-  function bindRight(scope) {
+  function bindOpen(scope) {
     scope.querySelectorAll("[data-open]").forEach(el => el.addEventListener("click", () => openDay(el.dataset.open, el.dataset.ticket)));
-    scope.querySelectorAll("[data-period]").forEach(b => b.addEventListener("click", () => movePeriod(Number(b.dataset.period))));
-    const sort = scope.querySelector("#sales-prod-sort");
-    if (sort) sort.addEventListener("change", () => { state.productSort = sort.value; repaintRight(); });
-    const od = scope.querySelector("#sales-other-day");
-    if (od) od.addEventListener("click", showOtherDay);
   }
-
-  function movePeriod(dir) {
-    state.period = dir === 0 ? PayEngine.payPeriodContaining(localKey())
-      : dir < 0 ? PayEngine.previousPeriod(state.period) : PayEngine.nextPeriod(state.period);
-    paint();
-  }
-
-  function showOtherDay() {
-    document.body.insertAdjacentHTML("beforeend", otherDayHTML());
-    const ov = document.getElementById("sales-otherday");
-    const close = () => ov.remove();
-    ov.addEventListener("click", e => { if (e.target === ov) close(); });
-    ov.querySelector("[data-x]").addEventListener("click", close);
-    ov.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => {
-      const k = ov.querySelector("#sales-otherday-date").value;
-      close();
-      if (!k) return;
-      if (b.dataset.go === "add") { if (hooks.onAddSale) hooks.onAddSale(k); }
-      else openDay(k);
-    }));
-  }
+  function clearSearch() { state.query = state.min = state.max = ""; paint(); }
 
   function bind() {
     host.querySelectorAll("[data-add]").forEach(b => b.addEventListener("click", () => hooks.onAddSale && hooks.onAddSale(b.dataset.add)));
     host.querySelectorAll("[data-paste]").forEach(b => b.addEventListener("click", () => hooks.onPaste && hooks.onPaste(b.dataset.paste)));
-    host.querySelectorAll("[data-sview]").forEach(b => b.addEventListener("click", () => {
-      state.view = b.dataset.sview; state.query = state.min = state.max = "";
-      const q = host.querySelector("#sales-q"); if (q) q.value = "";
-      ["#sales-min", "#sales-max"].forEach(id => { const el = host.querySelector(id); if (el) el.value = ""; });
-      const c = host.querySelector("#sales-clear"); if (c) c.remove();
-      repaintRight();
-    }));
-    const od2 = host.querySelector("#sales-other-day-2");
-    if (od2) od2.addEventListener("click", showOtherDay);
     const q = host.querySelector("#sales-q"), mn = host.querySelector("#sales-min"), mx = host.querySelector("#sales-max");
-    const onInput = () => { state.query = q.value; state.min = mn.value.trim(); state.max = mx.value.trim(); repaintRight(); };
+    const onInput = () => { state.query = q.value; state.min = mn.value.trim(); state.max = mx.value.trim(); repaintMain(); };
     [q, mn, mx].forEach(el => el && el.addEventListener("input", onInput));
     const clr = host.querySelector("#sales-clear");
-    if (clr) clr.addEventListener("click", () => { state.query = state.min = state.max = ""; paint(); });
-    // Left-column links (Today edit, pay period arrows).
-    host.querySelectorAll(".col-5 [data-open]").forEach(el => el.addEventListener("click", () => openDay(el.dataset.open)));
-    host.querySelectorAll(".col-5 [data-period]").forEach(b => b.addEventListener("click", () => movePeriod(Number(b.dataset.period))));
-    bindRight(host.querySelector("#sales-right"));
+    if (clr) clr.addEventListener("click", clearSearch);
+    bindOpen(host);
+  }
+
+  // ---- Pay period sheet (opened from Home's Pay period widget) ----
+  function renderPay(el) {
+    if (!el) return;
+    const draw = () => {
+      el.innerHTML = `<div class="stack">${payPanelHTML()}${payTableHTML()}</div>`;
+      el.querySelectorAll("[data-period]").forEach(b => b.addEventListener("click", () => {
+        const dir = Number(b.dataset.period);
+        state.period = dir === 0 ? PayEngine.payPeriodContaining(localKey())
+          : dir < 0 ? PayEngine.previousPeriod(state.period) : PayEngine.nextPeriod(state.period);
+        draw();
+      }));
+      el.querySelectorAll("[data-open]").forEach(r => r.addEventListener("click", () => {
+        const sheet = el.closest(".modal-overlay"); if (sheet) sheet.hidden = true;
+        openDay(r.dataset.open);
+      }));
+    };
+    const go = () => { state.period = PayEngine.payPeriodContaining(localKey()); draw(); };
+    if (state.data) go(); else loadData().then(go).catch(e => { el.innerHTML = `<div class="empty">${esc(e.message || "Couldn't load pay")}</div>`; });
   }
 
   async function render(el) {
@@ -409,7 +357,7 @@ const SalesUI = (() => {
     set onOpenDay(fn) { hooks.onOpenDay = fn; },
     set onAddSale(fn) { hooks.onAddSale = fn; },
     set onPaste(fn) { hooks.onPaste = fn; },
-    showView(v) { state.view = v; state.query = state.min = state.max = ""; paint(); },
+    renderPay,
     _state: state,
   };
 })();
