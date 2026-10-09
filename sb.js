@@ -172,18 +172,36 @@ const SB = (() => {
     return { data: rows[0].data || {}, updated_at: rows[0].updated_at, session };
   }
 
-  async function saveBackup(data) {
+  /// Write the blob with optimistic concurrency: the PATCH only matches when
+  /// updated_at is still the value we read (expectedUpdatedAt). If the phone
+  /// (or another dashboard) wrote in between, nothing is written and an
+  /// error with err.conflict = true is thrown so the caller can refetch,
+  /// rebase its queued edits and try again. Pass expectedUpdatedAt === null
+  /// only when there was no row at all (first backup).
+  async function saveBackup(data, expectedUpdatedAt) {
     const session = await getValidSession();
     const now = isoSeconds();
     if (typeof AppDataSanitizer !== "undefined") AppDataSanitizer.sanitize(data);
-    const updated = await rest("PATCH",
-      "user_backups?user_id=eq." + encodeURIComponent(session.user_id),
+    const base = "user_backups?user_id=eq." + encodeURIComponent(session.user_id);
+    if (expectedUpdatedAt === undefined) throw new Error("saveBackup needs the updated_at it was based on");
+    if (expectedUpdatedAt === null) {
+      // No row when we read: create it. A row that appeared since is a conflict.
+      try {
+        await rest("POST", "user_backups", { user_id: session.user_id, data, updated_at: now }, session);
+      } catch (e) {
+        if (e && e.status === 409) { const c = new Error("Backup changed — retrying"); c.conflict = true; throw c; }
+        throw e;
+      }
+      return now;
+    }
+    const updated = await rest("PATCH", base + "&updated_at=eq." + encodeURIComponent(expectedUpdatedAt),
       { data, updated_at: now }, session);
     if (!updated || !updated.length) {
-      await rest("POST", "user_backups",
-        { user_id: session.user_id, data, updated_at: now }, session);
+      const c = new Error("Backup changed on another device — retrying");
+      c.conflict = true;
+      throw c;
     }
-    return now;
+    return (updated[0] && updated[0].updated_at) || now;
   }
 
   // ---- account profile (public.profiles) ----

@@ -91,6 +91,11 @@ const MBDB = (() => {
     }
     try { localStorage.clear(); } catch (e) {}
     try { sessionStorage.clear(); } catch (e) {}
+    // Cached app files and the service worker too: no trace left.
+    try { if (self.caches) for (const k of await caches.keys()) await caches.delete(k); } catch (e) {}
+    try {
+      if (navigator.serviceWorker) for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+    } catch (e) {}
   }
 
   // ---- kv ----
