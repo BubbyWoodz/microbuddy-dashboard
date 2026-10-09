@@ -787,7 +787,7 @@ const StatsUI = (() => {
     const s = state._summary;
     if (s && s.returnsTotal > 0.005) {
       html += `<div class="list-item" style="border:none;padding-top:12px">` +
-        `<div class="li-main" style="font-size:13px;color:var(--muted)">↩ Returns in this range</div>` +
+        `<div class="li-main" style="font-size:13px;color:var(--muted)">${ICO.undo} Returns in this range</div>` +
         `<div class="li-val" style="color:var(--red);font-weight:700">-${money(s.returnsTotal)}</div></div>`;
     }
     html += `</div>`;
@@ -840,11 +840,31 @@ const StatsUI = (() => {
 
   // ---- Standout days (superlatives) ----
 
+const ICO = {
+  crown: '<svg class="ico-svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 8l3.5 3.5L12 5l5.5 6.5L21 8l-1.6 10H4.6z"/></svg>',
+  tag: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.83z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>',
+  box: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>',
+  zap: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+  trend_down: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></svg>',
+  users: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+  timer: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9.5V13l2.5 2.5M9.5 2h5"/></svg>',
+  sparkles: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.7 5.7 1.9-5.7 1.9L12 18.2l-1.9-5.7L4.4 10.6l5.7-1.9z"/><path d="M19 3l.7 2.1L22 6l-2.3.7L19 9l-.7-2.3L16 6l2.3-.9z"/></svg>',
+  clock: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+  moon: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>',
+  star: '<svg class="ico-svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
+  chart: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>',
+  warn: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+  undo: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>',
+  help: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+  flame: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>',
+  receipt: '<svg class="ico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1z"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>'
+};
+
   const HIGHLIGHT_ICONS = {
-    best: "👑", money: "💰", items: "📦",
-    "cph-high": "⚡", "cph-low": "🐢", "cph-customers": "👥",
-    "short-money": "🐇", "short-comm": "✨",
-    "long-money": "🕐", "long-comm": "🌙",
+    best: ICO.crown, money: ICO.tag, items: ICO.box,
+    "cph-high": ICO.zap, "cph-low": ICO.trend_down, "cph-customers": ICO.users,
+    "short-money": ICO.timer, "short-comm": ICO.sparkles,
+    "long-money": ICO.clock, "long-comm": ICO.moon,
   };
 
   function highlightsHTML(s) {
@@ -857,7 +877,7 @@ const StatsUI = (() => {
       html += `<button class="card stats-highlight" data-day="${esc(h.dayKey)}" ` +
         `style="padding:12px;text-align:left;cursor:pointer">` +
         `<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px">` +
-        `${HIGHLIGHT_ICONS[h.id] || "⭐"} ${esc(h.title)}</div>` +
+        `${HIGHLIGHT_ICONS[h.id] || ICO.star} ${esc(h.title)}</div>` +
         `<div style="font-size:16px;font-weight:800;margin:4px 0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(h.primary)}</div>` +
         `<div style="font-size:11px;color:var(--muted)">${esc(h.secondary)}</div>` +
         `</button>`;
@@ -865,12 +885,12 @@ const StatsUI = (() => {
     // Day-off earnings tiles.
     if (s.offDayCount > 0) {
       html += `<div class="card" style="padding:12px">` +
-        `<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">🌙 Sold on days off</div>` +
+        `<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">${ICO.moon} Sold on days off</div>` +
         `<div style="font-size:16px;font-weight:800;margin:4px 0 2px">${money(s.offDayRevenue)}</div>` +
         `<div style="font-size:11px;color:var(--muted)">across ${s.offDayCount} day${s.offDayCount === 1 ? "" : "s"} off</div></div>`;
       if (s.offDayReturns > 0.005) {
         html += `<div class="card" style="padding:12px">` +
-          `<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">↩ Returned on days off</div>` +
+          `<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">${ICO.undo} Returned on days off</div>` +
           `<div style="font-size:16px;font-weight:800;margin:4px 0 2px;color:var(--red)">-${money(s.offDayReturns)}</div>` +
           `<div style="font-size:11px;color:var(--muted)">across ${s.offDayCount} day${s.offDayCount === 1 ? "" : "s"} off</div></div>`;
       }
@@ -897,13 +917,13 @@ const StatsUI = (() => {
       `<div style="color:var(--muted);font-size:12px;margin:-6px 0 10px">Single tickets that carried you</div>` +
       `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">`;
     if (bm) {
-      html += tile("Biggest sale (money)", "💰",
+      html += tile("Biggest sale (money)", ICO.tag,
         compactMoney(ticketRevenue(bm.ticket)),
         `${fmtDayOnly(parseKey(dayKeyOf(bm.day)))} · ${ticketItemCount(bm.ticket)} items`,
         dayKeyOf(bm.day), "var(--accent)");
     }
     if (bi) {
-      html += tile("Most items in one sale", "📦",
+      html += tile("Most items in one sale", ICO.box,
         num(ticketItemCount(bi.ticket)),
         `${fmtDayOnly(parseKey(dayKeyOf(bi.day)))} · ${compactMoney(ticketRevenue(bi.ticket))}`,
         dayKeyOf(bi.day), "var(--accent)");
@@ -951,7 +971,7 @@ const StatsUI = (() => {
         : b.briefShifts - a.briefShifts);
 
     if (!partners.length && !brief.length) {
-      return emptyHTML("👥",
+      return emptyHTML(ICO.users,
         `No crew logged for ${RANGE_TITLES[state.range].toLowerCase()}`,
         "Add who's working to a shift and this page fills up.");
     }
@@ -962,8 +982,8 @@ const StatsUI = (() => {
       const most = partners[0];
       const least = partners[partners.length - 1];
       html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">` +
-        crewSuperCard("MOST TIME WITH", "👑", "var(--amber)", most) +
-        crewSuperCard("LEAST OFTEN", "❓", "var(--blue)", least) +
+        crewSuperCard("MOST TIME WITH", ICO.crown, "var(--amber)", most) +
+        crewSuperCard("LEAST OFTEN", ICO.help, "var(--blue)", least) +
         `</div>`;
 
       html += `<div class="panel" style="margin-bottom:12px">` +
@@ -1024,7 +1044,7 @@ const StatsUI = (() => {
       const msg = state.range === "custom"
         ? "Nothing logged in that range"
         : `Nothing logged for ${RANGE_TITLES[state.range].toLowerCase()}`;
-      return emptyHTML("📊", msg, "Log some sales and this page fills up with your numbers.");
+      return emptyHTML(ICO.chart, msg, "Log some sales and this page fills up with your numbers.");
     }
 
     return totalsCardHTML(s) +
@@ -1057,7 +1077,7 @@ const StatsUI = (() => {
     try {
       await loadData();
     } catch (e) {
-      container.innerHTML = emptyHTML("⚠️", "Couldn't load stats",
+      container.innerHTML = emptyHTML(ICO.warn, "Couldn't load stats",
         (e && e.message) || "Check your connection and try again.");
       return;
     }
