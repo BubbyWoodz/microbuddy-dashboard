@@ -895,6 +895,7 @@
 <script src="/home-widgets.js"></script>
 <script src="/qrcode.min.js"></script>
 <script src="/settings.js"></script>
+<script src="/screen-lock.js"></script>
 <script src="/buddy-actions.js"></script>
 <script src="/buddy.js"></script>
 
@@ -938,6 +939,7 @@ async function checkSession() {
 function showLoginGate(msg) {
   document.getElementById("login-gate").classList.remove("hidden");
   if (msg) document.getElementById("login-err").textContent = msg;
+  try { ScreenLock.hide(); } catch (e) {}
   wireLoginOnce();
 }
 function hideLoginGate() {
@@ -1055,6 +1057,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) watc
 async function afterLogin() {
   document.getElementById("cache-note").classList.remove("show");
   startUnlinkWatch();
+  try { ScreenLock.init(); } catch (e) {}
   // Preferences first: the saved theme applies instantly and is cached
   // for offline. AI config is server-only — never cached on the device.
   try {
