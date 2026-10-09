@@ -113,8 +113,38 @@ TOKEN = _read_secret("MICROBUDDY_TOKEN", ".token")
 APP_BUNDLE_ID = _read_secret("APPLE_APP_BUNDLE_ID", ".apple_app_id")
 
 # session_id -> {"exp": float, "sub": str, "email": str, "name": str}
+# Persisted to .sessions.json so logins survive an app restart / server
+# reboot. Unlink (/api/pair/revoke) and /logout clear it and re-save, so a
+# wiped login can never be resurrected by a restart.
 SESSIONS: dict[str, dict] = {}
+SESSIONS_FILE = os.path.join(BASE_DIR, ".sessions.json")
 _rpc_id = 0
+
+
+def _load_sessions() -> None:
+    try:
+        with open(SESSIONS_FILE) as f:
+            data = json.load(f)
+        now = time.time()
+        for sid, sess in data.items():
+            if isinstance(sess, dict) and sess.get("exp", 0) > now:
+                SESSIONS[sid] = sess
+    except Exception:
+        pass
+
+
+def _save_sessions() -> None:
+    try:
+        tmp = SESSIONS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(dict(SESSIONS), f)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, SESSIONS_FILE)
+    except Exception as e:
+        print(f"[session] warning: couldn't persist sessions: {e}", flush=True)
+
+
+_load_sessions()
 
 # QR pairing: code -> {"code", "exp", "poll", "sid"}.
 # The browser shows the QR, polls with the secret poll token, and the iPhone
@@ -803,6 +833,7 @@ STATIC_FILES = {
     "/sync.js": ("sync.js", "application/javascript; charset=utf-8"),
     "/qrcode.min.js": ("qrcode.min.js", "application/javascript; charset=utf-8"),
     "/settings.js": ("settings.js", "application/javascript; charset=utf-8"),
+    "/screen-lock.js": ("screen-lock.js", "application/javascript; charset=utf-8"),
     "/buddy.js": ("buddy.js", "application/javascript; charset=utf-8"),
     "/sb.js": ("sb.js", "application/javascript; charset=utf-8"),
     "/payengine.js": ("payengine.js", "application/javascript; charset=utf-8"),
@@ -835,13 +866,15 @@ class Handler(BaseHTTPRequestHandler):
                 sess = SESSIONS.get(sid)
                 if sess and sess["exp"] > time.time():
                     return sess
-                SESSIONS.pop(sid, None)
+                if SESSIONS.pop(sid, None) is not None:
+                    _save_sessions()
         return None
 
     def _new_session(self, sess: dict) -> str:
         sid = secrets.token_hex(32)
         sess["exp"] = time.time() + SESSION_TIMEOUT
         SESSIONS[sid] = sess
+        _save_sessions()
         return sid
 
     def _set_session_cookie(self, sess: dict) -> str:
@@ -1000,7 +1033,8 @@ class Handler(BaseHTTPRequestHandler):
             for part in cookie.split(";"):
                 part = part.strip()
                 if part.startswith("mb_session="):
-                    SESSIONS.pop(part[11:], None)
+                    if SESSIONS.pop(part[11:], None) is not None:
+                        _save_sessions()
             self._send(302, b"", extra={
                 "Location": "/",
                 "Set-Cookie": "mb_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax",
@@ -1283,6 +1317,7 @@ class Handler(BaseHTTPRequestHandler):
                 "name": "",
             })
             SESSIONS[sid]["mcp_token"] = mcp_token
+            _save_sessions()
             pairing["sid"] = sid
             self._send(200, json.dumps(
                 {"ok": True, "user_id": user_id}).encode())
@@ -1300,6 +1335,7 @@ class Handler(BaseHTTPRequestHandler):
             # which are cleared here.
             PAIRINGS.clear()
             SESSIONS.clear()
+            _save_sessions()
             try:
                 wt = os.path.join(BASE_DIR, ".widget_token")
                 if os.path.exists(wt):
