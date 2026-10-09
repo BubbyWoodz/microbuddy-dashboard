@@ -227,25 +227,23 @@ def _pay_period_containing(day: datetime.date):
 def _mint_mcp_token(user_id: str, access_token: str) -> str:
     """Mint a per-user MCP token for this dashboard pairing.
 
-    Uses the user's own Supabase session (RLS-enforced) — the same way the
-    phone app's Profile -> MCP Server screen mints tokens. Old auto-minted
-    'dashboard' tokens for this user are cleaned up first. Returns the raw
-    token (only known at mint time; only the hash is stored).
+    Uses the create_mcp_token RPC — exactly like the phone app's Profile ->
+    MCP Server screen. Direct INSERTs into mcp_tokens are blocked by RLS;
+    only the RPC may create tokens. Old auto-minted 'dashboard' tokens for
+    this user are cleaned up first (direct DELETE is allowed).
+    Returns the raw token (only known at mint time; only the hash is stored).
     """
-    raw = secrets.token_urlsafe(32)
-    token_hash = hashlib.sha256(raw.encode()).hexdigest()
     # Clean up previous dashboard tokens for this user.
     try:
         _supabase_rest("DELETE", "mcp_tokens", access_token,
                        query=f"?user_id=eq.{user_id}&label=eq.dashboard")
     except Exception as e:
         print(f"[pair] warning: couldn't clean old dashboard tokens: {e}", flush=True)
-    _supabase_rest("POST", "mcp_tokens", access_token, body={
-        "user_id": user_id,
-        "token_hash": token_hash,
-        "label": "dashboard",
-    })
-    return raw
+    token = _supabase_rest("POST", "rpc/create_mcp_token", access_token,
+                           body={"p_label": "dashboard"})
+    if not token or not isinstance(token, str):
+        raise ValueError("create_mcp_token returned no token")
+    return token
 
 
 # ================= Per-user preferences =================
