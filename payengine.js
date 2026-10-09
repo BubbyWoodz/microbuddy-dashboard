@@ -182,8 +182,14 @@ const PayEngine = (() => {
   /// Open/close hour for a day key: Mon-Sat 10-21, Sunday 11-18, with listed
   /// holidays running Sunday hours. (StoreHours.swift:40-51)
   function openAndClose(key, holidayDates) {
-    const sundayHours = weekday(key) === 0 ||
-      (holidayDates && holidayDates.has(key));
+    // holidayDates may be a Set (has) or an Array (includes) — JSON
+    // round-trips turn Sets into Arrays.
+    let isHoliday = false;
+    if (holidayDates) {
+        if (typeof holidayDates.has === "function") isHoliday = holidayDates.has(key);
+        else if (typeof holidayDates.includes === "function") isHoliday = holidayDates.includes(key);
+    }
+    const sundayHours = weekday(key) === 0 || isHoliday;
     return sundayHours ? { open: 11, close: 18 } : { open: 10, close: 21 };
   }
 
