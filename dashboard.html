@@ -12,8 +12,8 @@
 <meta name="apple-mobile-web-app-title" content="Micro Buddy">
 <link rel="apple-touch-icon" href="/icons/icon-180.png">
 <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/themes.css?v=2.0.4">
-<link rel="stylesheet" href="/components.css?v=2.0.4">
+<link rel="stylesheet" href="/themes.css?v=2.0.5">
+<link rel="stylesheet" href="/components.css?v=2.0.5">
 <script>
 /* Apply the last theme before first paint (no flash of the default). */
 (function () {
@@ -111,7 +111,7 @@ window.toast = toast;
         <button class="settings-row" data-page="account"><span class="sr-ico" data-ico="user"></span><span class="sr-text"><span class="sr-title">Account</span><span class="sr-sub">Photo, name, username, this dashboard</span></span><span class="sr-chev" data-ico="chevron-right"></span></button>
       </aside>
       <div class="settings-page" id="settings-pane">
-        <div class="settings-page-head"><div class="settings-page-title" id="settings-page-title"></div></div>
+        <div class="settings-page-head"><button class="settings-back" id="settings-back" hidden><span data-ico="chevron-left"></span><span id="settings-back-label">Workday</span></button><div class="settings-page-title" id="settings-page-title"></div></div>
         <div class="settings-pane-body" id="settings-pane-body"></div>
       </div>
     </div>
@@ -151,30 +151,30 @@ window.toast = toast;
   </div>
 </div>
 
-<script src="/icons.js?v=2.0.4"></script>
-<script src="/db.js?v=2.0.4"></script>
-<script src="/sb.js?v=2.0.4"></script>
-<script src="/sync.js?v=2.0.4"></script>
-<script src="/payengine.js?v=2.0.4"></script>
-<script src="/daydetail.js?v=2.0.4"></script>
-<script src="/stats.js?v=2.0.4"></script>
-<script src="/badges.js?v=2.0.4"></script>
-<script src="/sales.js?v=2.0.4"></script>
-<script src="/sale-entry.js?v=2.0.4"></script>
-<script src="/schedule.js?v=2.0.4"></script>
-<script src="/journal.js?v=2.0.4"></script>
-<script src="/coworkers.js?v=2.0.4"></script>
-<script src="/goals.js?v=2.0.4"></script>
-<script src="/microcharm.js?v=2.0.4"></script>
-<script src="/profile.js?v=2.0.4"></script>
-<script src="/leaderboard.js?v=2.0.4"></script>
-<script src="/brands.js?v=2.0.4"></script>
-<script src="/home-widgets.js?v=2.0.4"></script>
+<script src="/icons.js?v=2.0.5"></script>
+<script src="/db.js?v=2.0.5"></script>
+<script src="/sb.js?v=2.0.5"></script>
+<script src="/sync.js?v=2.0.5"></script>
+<script src="/payengine.js?v=2.0.5"></script>
+<script src="/daydetail.js?v=2.0.5"></script>
+<script src="/stats.js?v=2.0.5"></script>
+<script src="/badges.js?v=2.0.5"></script>
+<script src="/sales.js?v=2.0.5"></script>
+<script src="/sale-entry.js?v=2.0.5"></script>
+<script src="/schedule.js?v=2.0.5"></script>
+<script src="/journal.js?v=2.0.5"></script>
+<script src="/coworkers.js?v=2.0.5"></script>
+<script src="/goals.js?v=2.0.5"></script>
+<script src="/microcharm.js?v=2.0.5"></script>
+<script src="/profile.js?v=2.0.5"></script>
+<script src="/leaderboard.js?v=2.0.5"></script>
+<script src="/brands.js?v=2.0.5"></script>
+<script src="/home-widgets.js?v=2.0.5"></script>
 <script src="/qrcode.min.js"></script>
-<script src="/settings.js?v=2.0.4"></script>
-<script src="/screen-lock.js?v=2.0.4"></script>
-<script src="/buddy-actions.js?v=2.0.4"></script>
-<script src="/buddy.js?v=2.0.4"></script>
+<script src="/settings.js?v=2.0.5"></script>
+<script src="/screen-lock.js?v=2.0.5"></script>
+<script src="/buddy-actions.js?v=2.0.5"></script>
+<script src="/buddy.js?v=2.0.5"></script>
 
 <script>
 "use strict";
@@ -182,6 +182,7 @@ window.toast = toast;
 const TABS = ["home", "buddy", "sales", "schedule", "stats", "settings"];
 let currentTab = "home";
 let currentSettingsPage = "goals";
+let currentSettingsSub = ""; // Workday sub-page: schedule | reminders | coworkers[/id[/edit]] | coworkers/new
 const SETTINGS_TITLES = {
   ai: "Buddy AI", microcharm: "MicroCharm", goals: "Pay & Goals", workday: "Workday",
   brands: "Products & Data", appearance: "Appearance", account: "Account",
@@ -218,7 +219,7 @@ async function paintHeader() {
   }
 }
 window.onProfileChanged = () => { paintHeader(); };
-window.openSettingsPage = page => { currentSettingsPage = page || "goals"; showTab("settings"); };
+window.openSettingsPage = (page, sub) => { currentSettingsPage = page || "goals"; currentSettingsSub = sub || ""; showTab("settings"); };
 
 // ---- Tabs ----
 async function loadTab(tab) {
@@ -242,7 +243,7 @@ function showTab(tab, opts) {
   document.querySelectorAll(".tab-panel").forEach(p => p.classList.toggle("active", p.id === "tab-" + tab));
   document.querySelectorAll("#top-nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
   $("avatar-btn").classList.toggle("active", tab === "settings");
-  try { history.replaceState(null, "", "#" + tab + (tab === "settings" ? "/" + currentSettingsPage : "")); } catch (e) {}
+  try { history.replaceState(null, "", "#" + tab + (tab === "settings" ? "/" + currentSettingsPage + (currentSettingsSub ? "/" + currentSettingsSub : "") : "")); } catch (e) {}
   window.scrollTo({ top: 0 });
   if (!(opts && opts.noLoad)) return loadTab(tab);
 }
@@ -250,12 +251,23 @@ document.querySelectorAll("#top-nav button").forEach(b => b.addEventListener("cl
 $("avatar-btn").addEventListener("click", () => showTab("settings"));
 
 // ---- Settings (two-pane) ----
-async function openSettings(page) {
+const WORKDAY_SUBS = {
+  schedule: { title: "Schedule", ico: "calendar", tint: "navy" },
+  reminders: { title: "Reminders", ico: "bell", tint: "amber" },
+  coworkers: { title: "Coworkers", ico: "users", tint: "accent" },
+};
+async function openSettings(page, sub) {
   if (!SETTINGS_TITLES[page]) page = "goals";
+  if (sub !== undefined) currentSettingsSub = sub || "";
+  if (page !== currentSettingsPage) currentSettingsSub = sub || "";
   currentSettingsPage = page;
+  const subKey = page === "workday" ? (currentSettingsSub.split("/")[0] || "") : "";
+  if (subKey && !WORKDAY_SUBS[subKey]) currentSettingsSub = "";
+  const subMeta = page === "workday" ? WORKDAY_SUBS[subKey] : null;
   document.querySelectorAll("#settings-menu .settings-row").forEach(r => r.classList.toggle("active", r.dataset.page === page));
-  $("settings-page-title").textContent = SETTINGS_TITLES[page];
-  try { history.replaceState(null, "", "#settings/" + page); } catch (e) {}
+  $("settings-page-title").textContent = subMeta ? subMeta.title : SETTINGS_TITLES[page];
+  $("settings-back").hidden = !subMeta;
+  try { history.replaceState(null, "", "#settings/" + page + (subMeta ? "/" + currentSettingsSub : "")); } catch (e) {}
   const body = $("settings-pane-body");
   body.innerHTML = "";
   const box = (id, cls) => { const d = document.createElement("div"); if (id) d.id = id; if (cls) d.className = cls; body.appendChild(d); return d; };
@@ -270,11 +282,13 @@ async function openSettings(page) {
     pay.style.marginTop = "var(--gap)";
     await Promise.all([GoalsUI.open(), ProfileUI.renderPay(pay)]);
   } else if (page === "workday") {
-    const s = box("sched-settings");
-    const c = box("coworkers-body");
-    c.style.marginTop = "var(--gap)";
-    await ScheduleUI.renderSettings(s);
-    await CoworkersUI.renderGrid(c);
+    if (subKey === "schedule" || subKey === "reminders") {
+      await ScheduleUI.renderSettings(box("sched-settings"), subKey);
+    } else if (subKey === "coworkers") {
+      await CoworkersUI.open(box("coworkers-body"), currentSettingsSub.split("/").slice(1).join("/"));
+    } else {
+      await renderWorkdayHub(box("workday-hub"));
+    }
   } else if (page === "brands") {
     await BrandsUI.open(box("brands-body"));
   } else if (page === "appearance") {
@@ -287,7 +301,30 @@ async function openSettings(page) {
   }
 }
 document.querySelectorAll("#settings-menu .settings-row").forEach(r =>
-  r.addEventListener("click", () => openSettings(r.dataset.page)));
+  r.addEventListener("click", () => openSettings(r.dataset.page, "")));
+$("settings-back").addEventListener("click", () => openSettings("workday", ""));
+
+/// Settings > Workday mirrors iOS: three rows, each opening its own page.
+async function renderWorkdayHub(el) {
+  el.innerHTML = spinner("Loading workday…");
+  let nCow = 0;
+  try {
+    await ScheduleUI.reload();
+    nCow = (await CoworkersUI.getContacts()).length;
+  } catch (e) { /* summaries are best-effort */ }
+  const row = (key, sub) => {
+    const m = WORKDAY_SUBS[key];
+    return '<button class="hub-row" data-sub="' + key + '"><span class="hub-ico ' + m.tint + '">' + Icon(m.ico, { size: 20 }) + "</span>" +
+      '<span class="hub-text"><span class="hub-title">' + esc(m.title) + '</span><span class="hub-sub">' + esc(sub) + "</span></span>" +
+      '<span class="hub-chev">' + Icon("chevron-right", { size: 18 }) + "</span></button>";
+  };
+  el.innerHTML = '<div class="panel hub-card">' +
+    row("schedule", "UKG calendar, sync, holiday hours \u00B7 " + ScheduleUI.lastSyncText()) +
+    row("reminders", "Shift heads-ups and proactive nudges \u00B7 " + ScheduleUI.remindersSummary()) +
+    row("coworkers", nCow ? nCow + " saved \u00B7 contacts, notes, journal moments" : "Your crew list \u2014 add who you work with") +
+    "</div>";
+  el.querySelectorAll("[data-sub]").forEach(b => b.addEventListener("click", () => openSettings("workday", b.dataset.sub)));
+}
 
 // ---- Cross-module wiring ----
 function openDay(dayKey, ticket) {
@@ -320,7 +357,7 @@ SalesUI.onAddSale = dayKey => SaleEntry.open({ dayKey });
 SalesUI.onPaste = dayKey => SaleEntry.open({ dayKey, mode: "paste" });
 StatsUI.onOpenDay = openDay;
 ScheduleUI.onViewDay = openDay;
-ScheduleUI.onOpenSettings = () => { currentSettingsPage = "workday"; showTab("settings"); };
+ScheduleUI.onOpenSettings = () => { currentSettingsPage = "workday"; currentSettingsSub = "schedule"; showTab("settings"); };
 DayDetailUI.onAddTicket = dayKey => SaleEntry.open({ dayKey });
 DayDetailUI.onEditLine = (dayKey, ti, li) => SaleEntry.open({ dayKey, ticketIndex: ti, lineIndex: li });
 DayDetailUI.onEditJournal = dayKey => openSheet("Journal", el => JournalUI.renderJournalTab(el, dayKey));
@@ -485,12 +522,13 @@ async function afterLogin() {
     if (e && e.isAuth) { showLoginGate("Your session expired — scan a new code to link again."); return; }
   }
   await SyncEngine.syncThemeFromBlob().catch(() => {});
+  await CoworkersUI.preload();
   try { await SB.getProfile(); } catch (e) {}
   paintHeader();
   SyncEngine.syncChat().catch(() => {});
   try { if (window.LeaderboardUI) LeaderboardUI.schedulePush(); } catch (e) {}
   const hash = (location.hash || "").replace(/^#/, "").split("/");
-  if (hash[0] === "settings" && SETTINGS_TITLES[hash[1]]) currentSettingsPage = hash[1];
+  if (hash[0] === "settings" && SETTINGS_TITLES[hash[1]]) { currentSettingsPage = hash[1]; currentSettingsSub = hash.slice(2).join("/"); }
   showTab(TABS.includes(hash[0]) ? hash[0] : "home");
 }
 
@@ -498,7 +536,7 @@ async function afterLogin() {
 window.addEventListener("hashchange", () => {
   if (gated()) return;
   const h = (location.hash || "").replace(/^#/, "").split("/");
-  if (h[0] === "settings" && SETTINGS_TITLES[h[1]]) currentSettingsPage = h[1];
+  if (h[0] === "settings" && SETTINGS_TITLES[h[1]]) { currentSettingsPage = h[1]; currentSettingsSub = h.slice(2).join("/"); }
   if (TABS.includes(h[0]) && (h[0] !== currentTab || h[0] === "settings")) showTab(h[0]);
 });
 
