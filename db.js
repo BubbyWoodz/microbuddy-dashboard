@@ -82,6 +82,17 @@ const MBDB = (() => {
     await run("apiCache", "readwrite", os => os.delete(path));
   }
 
+  /// Full unlink wipe: every local store plus web storage, so no trace of
+  /// the account remains on this browser. Used when the phone unlinks this
+  /// dashboard (POST /api/pair/revoke) and on manual sign-out.
+  async function wipeAll() {
+    for (const store of ["apiCache", "kv", "chat", "writeQueue"]) {
+      try { await run(store, "readwrite", os => os.clear()); } catch (e) {}
+    }
+    try { localStorage.clear(); } catch (e) {}
+    try { sessionStorage.clear(); } catch (e) {}
+  }
+
   // ---- kv ----
   // Only non-sensitive preferences belong here. AI config is server-only.
   async function kvSet(key, value) {
@@ -177,7 +188,7 @@ const MBDB = (() => {
 
   return {
     open, putCache, getCache, getAllCachedPaths, getCacheCount, clearCache,
-    deleteCache,
+    deleteCache, wipeAll,
     kvSet, kvGet, kvDelete, addChatMessage, getChatHistory, clearChat, listChatSessions,
     replaceChatSession, queueWrite, getWriteQueue, clearWriteQueue, writeQueueCount,
   };
