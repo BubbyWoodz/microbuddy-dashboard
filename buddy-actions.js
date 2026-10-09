@@ -39,29 +39,7 @@ const BuddyActions = (() => {
   // dashboard.html can't be edited from here, so the action UI ships its own
   // CSS, injected once. Uses the app's theme variables (--card, --accent…).
 
-  const ACTION_CSS = [
-    ".chat-pills{display:flex;gap:8px;flex-wrap:wrap;padding:8px 12px 0}",
-    ".pill-btn{background:var(--card2);border:1px solid var(--border);color:var(--text);",
-    " border-radius:999px;padding:7px 14px;font-size:13px;cursor:pointer;white-space:nowrap}",
-    ".pill-btn:active{transform:scale(.96)}",
-    ".proposal-wrap{display:flex;flex-direction:column;gap:10px;margin:6px 0}",
-    ".proposal-card{border:1px solid var(--accent);border-radius:var(--radius);padding:14px}",
-    ".proposal-title{font-size:13px;font-weight:700;color:var(--muted);margin-bottom:10px}",
-    ".proposal-sub{font-size:12px;font-weight:700;color:var(--blue);margin:8px 0 6px}",
-    ".proposal-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}",
-    ".proposal-chip{background:var(--blue-dim);color:var(--text);border-radius:999px;",
-    " padding:5px 10px;font-size:12px;font-weight:600}",
-    ".proposal-day{margin:8px 0}",
-    ".proposal-dayhead{font-size:13px;font-weight:700;margin-bottom:4px}",
-    ".proposal-row{display:flex;justify-content:space-between;gap:8px;padding:5px 0;",
-    " border-bottom:1px solid var(--border);font-size:13px}",
-    ".proposal-row:last-child{border-bottom:none}",
-    ".proposal-actions{display:flex;flex-direction:column;gap:8px;margin-top:12px}",
-    ".proposal-actions .btn{width:100%}",
-    ".proposal-status{margin-top:12px;font-size:13px;font-weight:700}",
-    ".proposal-status.ok{color:var(--accent)}",
-    ".proposal-status.muted{color:var(--muted)}",
-  ].join("\n");
+  const ACTION_CSS = ""; // moved to components.css
 
   function injectStyles() {
     try {
@@ -734,7 +712,7 @@ const BuddyActions = (() => {
 
   function cardShell(title, innerHTML, id, kind, status) {
     const statusHTML = status === "confirmed"
-      ? '<div class="proposal-status ok">✓ Saved</div>'
+      ? '<div class="proposal-status ok">' + Icon("check", { size: 14 }) + ' Saved</div>'
       : status === "declined"
         ? '<div class="proposal-status muted">Not saved</div>'
         : '<div class="proposal-actions">' +

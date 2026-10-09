@@ -57,13 +57,7 @@ const JournalModels = (() => {
   };
 
   // UUID v4 generator
-  function uuid() {
-    if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
-    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
-      const r = (Math.random() * 16) | 0;
-      return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
-    });
-  }
+  function uuid() { return AppDataSanitizer.uuid(); }
 
   // MomentOverride.key(for:) — first 64 collapsed chars, lowercased.
   // Used to migrate corrections saved before moments had stable ids.
@@ -476,7 +470,7 @@ const JournalEditor = (() => {
       if (seen.has(key)) continue;
       seen.add(key);
       const cls = m.kind === "sale" ? "mention-product" : "mention-person";
-      const icon = m.kind === "sale" ? "🧾" : "👤";
+      const icon = m.kind === "sale" ? Icon("receipt", { size: 12 }) : Icon("user", { size: 12 });
       chips.push(
         '<span class="link-chip ' + cls + '">' + icon + " " + escapeHtml(m.label) + "</span>"
       );
@@ -511,10 +505,10 @@ const JournalEditor = (() => {
  */
 const InteractionTimeline = (() => {
   const TYPE_META = {
-    "Conversation": { icon: "💬", color: "var(--blue)" },
-    "Sale": { icon: "🛍️", color: "var(--accent)" },
-    "Favor": { icon: "💛", color: "var(--amber)" },
-    "Milestone": { icon: "⭐", color: "var(--accent)" },
+    "Conversation": { icon: "chat", color: "var(--blue)" },
+    "Sale": { icon: "cart", color: "var(--accent)" },
+    "Favor": { icon: "heart", color: "var(--amber)" },
+    "Milestone": { icon: "star", color: "var(--accent)" },
   };
 
   /**
@@ -534,7 +528,7 @@ const InteractionTimeline = (() => {
       for (const day of days) {
         html += '<div class="timeline-day">' +
           '<button class="timeline-day-link" data-day="' + day.dayKey + '">' +
-          JournalEditor.escapeHtml(formatDay(day.date)) + " ›</button>";
+          JournalEditor.escapeHtml(formatDay(day.date)) + " " + Icon("chevron-right", { size: 14 }) + "</button>";
         for (const m of day.moments) {
           html += momentCardHTML(m);
         }
@@ -591,12 +585,12 @@ const InteractionTimeline = (() => {
 
     return '<div class="moment-card" data-moment-id="' + m.id + '">' +
       '<div class="moment-top">' +
-        '<span class="type-chip" style="color:' + meta.color + '">' + meta.icon + " " +
+        '<span class="type-chip" style="color:' + meta.color + '">' + Icon(meta.icon, { size: 13 }) + " " +
           JournalEditor.escapeHtml(m.interactionType) + "</span>" +
         '<span class="type-menu"><select>' + typeOptions + "</select></span>" +
       "</div>" +
       '<div class="moment-summary">' + JournalEditor.escapeHtml(m.summary) +
-        '<span class="chev">›</span></div>' +
+        '<span class="chev">' + Icon("chevron-right", { size: 14 }) + '</span></div>' +
       (dirLabel || tags ? '<div class="moment-meta">' + dirLabel + tags + "</div>" : "") +
     "</div>";
   }
@@ -628,7 +622,7 @@ const JournalPassageView = (() => {
     }
     html += '<div class="passage-body" id="passage-body">' +
       highlightSpan(entry.text, span) + "</div>";
-    html += '<button class="btn" id="passage-back">← Back</button></div>';
+    html += '<button class="btn" id="passage-back">' + Icon("chevron-left", { size: 14 }) + ' Back</button></div>';
     boxEl.innerHTML = html;
 
     // Scroll the highlight into view (centered).
@@ -694,7 +688,7 @@ const JournalUI = (() => {
       let html = '<div class="journal-controls">' +
         '<div class="field"><label>Date</label><input type="date" id="journal-date" value="' + dateISO + '"></div>' +
         '<button class="btn" id="journal-go">Load</button>' +
-        '<button class="btn primary" id="journal-new">＋ New entry</button>' +
+        '<button class="btn primary" id="journal-new">' + Icon("plus", { size: 14 }) + ' New entry</button>' +
         "</div>" +
         '<div id="journal-body"></div>';
 
@@ -705,7 +699,7 @@ const JournalUI = (() => {
         renderJournalTab(boxEl, boxEl.querySelector("#journal-date").value);
       });
       boxEl.querySelector("#journal-new").addEventListener("click", () => {
-        const today = new Date().toISOString().slice(0, 10);
+        const today = PayEngine.dayKey(new Date());
         boxEl.querySelector("#journal-date").value = today;
         renderJournalTab(boxEl, today);
       });

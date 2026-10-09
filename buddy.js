@@ -40,10 +40,13 @@ const BuddyUI = (() => {
     if (!box) return;
     if (!loaded) {
       loaded = true;
+      const I = (n, o) => (typeof Icon === "function" ? Icon(n, o) : "");
       box.innerHTML =
+        '<div class="page-head"><div><h2>Buddy</h2><div class="page-sub">Your sales buddy — ask about your numbers, schedule or pay</div></div></div>' +
         '<div class="chat-layout">' +
         '<aside class="chat-sessions panel">' +
-        '<button class="btn" id="chat-new" style="width:100%">+ New chat</button>' +
+        '<button class="btn primary block" id="chat-new">' + I("plus", { size: 14 }) + ' New chat</button>' +
+        '<div class="label" style="margin:14px 4px 6px">Conversations</div>' +
         '<div id="chat-session-list" class="session-list"></div>' +
         "</aside>" +
         '<div class="chat-main panel">' +
@@ -52,7 +55,7 @@ const BuddyUI = (() => {
         '<div id="chat-pills" class="chat-pills"></div>' +
         '<form id="chat-form" class="chat-input-row">' +
         '<input type="text" id="chat-input" placeholder="Ask Buddy about your numbers…" autocomplete="off">' +
-        '<button class="btn" type="submit" id="chat-send">Send</button>' +
+        '<button class="btn primary" type="submit" id="chat-send">' + I("send", { size: 15 }) + ' Send</button>' +
         "</form>" +
         "</div></div>";
       document.getElementById("chat-new").addEventListener("click", newSession);
@@ -106,12 +109,12 @@ const BuddyUI = (() => {
       document.getElementById("chat-session-list").innerHTML = "";
       setupBox.innerHTML =
         '<div class="empty-state">' +
-        '<div class="empty-title">Buddy isn\'t set up yet</div>' +
+        '<div class="empty-ico">' + (typeof Icon === "function" ? Icon("robot", { size: 34 }) : "") + '</div><div class="t">Buddy isn\'t set up yet</div>' +
         '<p>Point the dashboard at your AI server (Ollama, or any OpenAI-compatible endpoint) in Settings, then come back and chat.</p>' +
-        '<button class="btn" id="goto-ai-settings">Open AI settings</button>' +
+        '<button class="btn primary" id="goto-ai-settings">Open Buddy AI settings</button>' +
         "</div>";
       document.getElementById("goto-ai-settings").addEventListener("click", () => {
-        if (window.openSettings) window.openSettings();
+        if (window.openSettingsPage) window.openSettingsPage("ai");
       });
     } else {
       setupBox.hidden = true;
@@ -143,7 +146,7 @@ const BuddyUI = (() => {
       '<div class="session-title">' + esc(s.title || "Untitled") + "</div>" +
       '<div class="session-meta">' + esc(fmtTime(s.updated_at)) +
       " · " + (s.message_count || 0) + " msgs</div>" +
-      '<button class="session-del" data-del="' + esc(s.id) + '" title="Delete">×</button>' +
+      '<button class="session-del" data-del="' + esc(s.id) + '" title="Delete" aria-label="Delete conversation">' + (typeof Icon === "function" ? Icon("trash", { size: 14 }) : "") + '</button>' +
       "</div>"
     ).join("");
     listBox.querySelectorAll(".session-item").forEach(el => {
@@ -174,13 +177,13 @@ const BuddyUI = (() => {
     const box = document.getElementById("chat-messages");
     if (!box) return;
     if (!currentSession) {
-      box.innerHTML = '<div class="empty-state"><div class="empty-title">Start a new chat</div>' +
+      box.innerHTML = '<div class="empty-state"><div class="empty-ico">' + (typeof Icon === "function" ? Icon("robot", { size: 34 }) : "") + '</div><div class="t">Start a new chat</div>' +
         "<p>Ask about today's numbers, your week, commission, schedule — Buddy knows your data.</p></div>";
       return;
     }
     const msgs = await MBDB.getChatHistory(currentSession).catch(() => []);
     if (!msgs.length) {
-      box.innerHTML = '<div class="empty-state"><div class="empty-title">Start a new chat</div>' +
+      box.innerHTML = '<div class="empty-state"><div class="empty-ico">' + (typeof Icon === "function" ? Icon("robot", { size: 34 }) : "") + '</div><div class="t">Start a new chat</div>' +
         "<p>Ask about today's numbers, your week, commission, schedule — Buddy knows your data.</p></div>";
       return;
     }
@@ -252,7 +255,7 @@ const BuddyUI = (() => {
           displayReply = parsed.reply;
           const result = await BuddyActions.applyActions(parsed.actions);
           if (result.applied.length) {
-            displayReply += "\n" + result.applied.map(a => "✓ " + a).join("\n");
+            displayReply += "\n" + result.applied.map(a => "- " + a).join("\n");
           }
           cardsHTML = BuddyActions.renderProposalCards(result);
         } catch (e) {

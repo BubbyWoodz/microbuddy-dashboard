@@ -35,13 +35,22 @@ const PayEngine = (() => {
 
   const DAY_MS = 86400000;
 
-  /// "yyyy-MM-dd" for a Date (UTC) — mirrors WorkDay.key's stable format.
+  /// "yyyy-MM-dd" for a key, Date, or ISO timestamp. Timestamps (shift
+  /// starts, day.date) are bucketed by the LOCAL calendar day, like iOS
+  /// Calendar.current — a 5 PM PT shift is 00:00Z the next day, and keying it
+  /// in UTC filed it under the wrong day. Plain keys pass through untouched.
   function dayKey(d) {
+    if (typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
     const dt = (d instanceof Date) ? d : new Date(d);
-    const y = dt.getUTCFullYear();
-    const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(dt.getUTCDate()).padStart(2, "0");
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, "0");
+    const day = String(dt.getDate()).padStart(2, "0");
     return `${y}-${m}-${day}`;
+  }
+
+  /// UTC calendar key — only for the UTC-midnight Dates parseKey() makes.
+  function utcKey(dt) {
+    return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
   }
 
   /// Parse a "yyyy-MM-dd" key to a UTC-midnight Date.
@@ -50,9 +59,15 @@ const PayEngine = (() => {
     return new Date(Date.UTC(y, m - 1, d));
   }
 
+  /// Local midnight (ms) of a day key — store hours are local wall-clock.
+  function localMidnight(key) {
+    const [y, m, d] = String(key).split("-").map(Number);
+    return new Date(y, m - 1, d).getTime();
+  }
+
   /// Add whole days to a day key, returning a day key.
   function addDays(key, n) {
-    return dayKey(new Date(parseKey(key).getTime() + n * DAY_MS));
+    return utcKey(new Date(parseKey(key).getTime() + n * DAY_MS));
   }
 
   /// Whole days from keyA to keyB (keyB - keyA).
@@ -198,7 +213,10 @@ const PayEngine = (() => {
   /// shift = { start: Date|ISO, end: Date|ISO }; key = "yyyy-MM-dd" of the day.
   function premiumHoursForShift(shift, key, holidayDates) {
     const { open, close } = openAndClose(key, holidayDates);
-    const dayStart = parseKey(key).getTime();
+    // Store hours are local wall-clock: anchor to the key's LOCAL midnight
+    // (UTC midnight put 10 AM open at 3 AM PT and turned open hours into
+    // closing premium).
+    const dayStart = localMidnight(key);
     const openMs = dayStart + open * 3600000;
     const closeMs = dayStart + close * 3600000;
     const startMs = (shift.start instanceof Date ? shift.start : new Date(shift.start)).getTime();

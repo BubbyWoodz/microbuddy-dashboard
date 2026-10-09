@@ -169,124 +169,7 @@ const DayDetailUI = (() => {
   function ensureStyles() {
     if (styleEl) return;
     styleEl = document.createElement("style");
-    styleEl.textContent = `
-#dd-overlay { position: fixed; inset: 0; z-index: 1003; background: var(--bg);
-  display: flex; flex-direction: column; }
-#dd-overlay.hidden { display: none; }
-#dd-head { position: sticky; top: 0; z-index: 5; display: flex; align-items: center;
-  gap: 8px; padding: 12px 12px 10px; background: var(--bg);
-  border-bottom: 1px solid var(--border); }
-#dd-back { background: none; border: none; color: var(--text); font-size: 26px;
-  cursor: pointer; padding: 2px 10px; line-height: 1; }
-#dd-title { flex: 1; text-align: center; font-size: 17px; font-weight: 700; }
-#dd-menu-btn { background: var(--card2); border: 1px solid var(--border); color: var(--text);
-  border-radius: 10px; padding: 6px 12px; font-size: 16px; cursor: pointer; }
-#dd-menu { position: absolute; top: 56px; right: 12px; z-index: 20; background: var(--bg2);
-  border: 1px solid var(--border); border-radius: 12px; min-width: 210px;
-  box-shadow: 0 8px 30px rgba(0,0,0,.35); overflow: hidden; }
-#dd-menu.hidden { display: none; }
-#dd-menu button { display: flex; align-items: center; gap: 10px; width: 100%;
-  background: none; border: none; color: var(--text); font-size: 15px;
-  padding: 12px 14px; cursor: pointer; text-align: left; }
-#dd-menu button:active { background: var(--card2); }
-#dd-menu button.danger { color: var(--red); }
-#dd-menu .sep { height: 1px; background: var(--border); }
-#dd-body { flex: 1; overflow-y: auto; padding: 12px 16px 40px; }
-#dd-col { max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
-.dd-card { background: var(--card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 16px; }
-.dd-hero { text-align: center; padding: 20px 16px 16px; }
-.dd-hero .lbl { font-size: 13px; color: var(--muted); text-transform: uppercase;
-  letter-spacing: .08em; font-weight: 600; }
-.dd-hero .big { font-size: 44px; font-weight: 800; letter-spacing: -.5px; margin: 4px 0; }
-.dd-hero .cap { font-size: 13.5px; color: var(--muted); }
-.dd-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
-  gap: 8px; margin-top: 14px; }
-.dd-mini { background: var(--card2); border-radius: 12px; padding: 10px 6px; text-align: center; }
-.dd-mini .v { font-size: 17px; font-weight: 800; }
-.dd-mini .l { font-size: 10.5px; color: var(--muted); text-transform: uppercase;
-  letter-spacing: .05em; font-weight: 600; margin-top: 2px; }
-.dd-sec-h { font-size: 15px; font-weight: 700; margin: 2px 0 0; }
-.dd-sec-sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
-.dd-row { display: flex; align-items: center; gap: 10px; padding: 10px 0;
-  border-bottom: 1px solid var(--border); }
-.dd-row:last-child { border-bottom: none; }
-.dd-row .grow { flex: 1; min-width: 0; }
-.dd-row .t1 { font-size: 15px; font-weight: 600; }
-.dd-row .t2 { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
-.dd-row .amt { font-size: 15px; font-weight: 700; white-space: nowrap; }
-.dd-pill { display: inline-block; font-size: 11.5px; font-weight: 700; padding: 3px 10px;
-  border-radius: 999px; }
-.dd-foot { font-size: 12px; color: var(--muted); line-height: 1.5; }
-.dd-topoff { border-left: 3px solid var(--amber); }
-.dd-topoff .h { display: flex; align-items: center; gap: 6px; font-size: 12.5px;
-  font-weight: 700; color: var(--amber); margin-bottom: 6px; }
-.dd-ticket { background: var(--card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 14px; margin-bottom: 10px;
-  transition: box-shadow .4s, border-color .4s; }
-.dd-ticket.flash { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-dim); }
-.dd-ticket .th { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.dd-ticket .tm { font-size: 12.5px; font-weight: 700; color: var(--muted); }
-.dd-ticket .rev { margin-left: auto; font-size: 16px; font-weight: 800; }
-.dd-line { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 14px; }
-.dd-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
-.dd-line .p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dd-line .q { color: var(--muted); font-size: 12.5px; }
-.dd-line .c { font-size: 12.5px; font-weight: 700; }
-.dd-line .x { background: none; border: none; cursor: pointer; font-size: 13px; padding: 2px 6px; }
-.dd-ticket .acts { display: flex; gap: 14px; align-items: center; margin-top: 8px;
-  padding-top: 8px; border-top: 1px solid var(--border); }
-.dd-link { background: none; border: none; cursor: pointer; font-size: 13px;
-  font-weight: 600; color: var(--blue); padding: 0; }
-.dd-link.danger { color: var(--red); }
-.dd-note { font-size: 12.5px; color: var(--muted); font-style: italic; margin-top: 6px; }
-.dd-empty { text-align: center; padding: 22px 12px; color: var(--muted); font-size: 14px; }
-.dd-chiprow { display: flex; gap: 8px; overflow-x: auto; padding: 4px 0 2px; }
-.dd-hours { display: flex; gap: 12px; align-items: center; width: 100%;
-  background: none; border: none; color: var(--text); cursor: pointer; padding: 0;
-  font: inherit; text-align: left; }
-.dd-hours .ic { font-size: 22px; }
-#dd-sheet, #dd-share { position: fixed; inset: 0; z-index: 1004;
-  background: rgba(0,0,0,.55); display: flex; align-items: flex-end; justify-content: center; }
-#dd-sheet.hidden, #dd-share.hidden { display: none; }
-#dd-sheet .sheet-card, #dd-share .sheet-card { background: var(--bg2);
-  border: 1px solid var(--border); border-radius: 16px 16px 0 0; width: 100%;
-  max-width: 520px; max-height: 88vh; overflow-y: auto; padding: 20px; }
-@media (min-width: 700px) {
-  #dd-sheet, #dd-share { align-items: center; padding: 24px; }
-  #dd-sheet .sheet-card, #dd-share .sheet-card { border-radius: 16px; }
-}
-.dd-field { margin-bottom: 14px; }
-.dd-field label { display: block; font-size: 12px; font-weight: 700; color: var(--muted);
-  text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
-.dd-field input[type="number"], .dd-field input[type="time"], .dd-field input[type="text"] {
-  width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
-  background: var(--card); color: var(--text); font-size: 17px; }
-.dd-breakrow { display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 0; }
-.dd-breakrow .t { font-size: 15px; font-weight: 600; }
-.dd-addtime { background: var(--card2); border: 1px solid var(--border); color: var(--accent);
-  border-radius: 999px; padding: 8px 14px; font-size: 14px; font-weight: 700; cursor: pointer; }
-#dd-toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%) translateY(20px);
-  background: var(--card2); color: var(--text); border: 1px solid var(--border);
-  border-radius: 10px; padding: 10px 18px; font-size: 14px; z-index: 2000;
-  opacity: 0; pointer-events: none; transition: opacity .25s, transform .25s; }
-#dd-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-.dd-share-canvas { width: 100%; border-radius: 12px; border: 1px solid var(--border); }
-.dd-journal { cursor: pointer; }
-.dd-journal .jt { font-size: 15.5px; font-weight: 700; margin-bottom: 4px; }
-.dd-journal .jx { font-size: 14px; color: var(--muted); line-height: 1.5; }
-.dd-blank { display: flex; gap: 12px; align-items: center; width: 100%; background: none;
-  border: none; color: var(--text); font: inherit; cursor: pointer; padding: 0; text-align: left; }
-.dd-blank .ic { font-size: 26px; }
-.dd-cmp { margin-bottom: 10px; cursor: pointer; }
-.dd-cmp .vs { font-size: 15px; font-weight: 700; }
-.dd-cmp .sc { font-size: 13px; color: var(--muted); margin-top: 2px; }
-.dd-cmp-detail { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
-  display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.dd-cmp-detail .side { background: var(--card2); border-radius: 10px; padding: 10px; font-size: 13px; }
-.dd-cmp-detail .side h4 { margin: 0 0 6px; font-size: 13px; }
-`;
+    styleEl.textContent = `/* moved to components.css */`;
     document.head.appendChild(styleEl);
   }
 
@@ -302,15 +185,15 @@ const DayDetailUI = (() => {
     overlay.className = "hidden";
     overlay.innerHTML = `
       <div id="dd-head">
-        <button id="dd-back" aria-label="Back">‹</button>
+        <button id="dd-back" aria-label="Back">${Icon("chevron-left", { size: 22 })}</button>
         <div id="dd-title"></div>
         <button id="dd-menu-btn" aria-label="Day actions">⋯</button>
         <div id="dd-menu" class="hidden">
-          <button data-act="add">＋&nbsp; Add sale</button>
-          <button data-act="compare">⇄&nbsp; Compare sales</button>
+          <button data-act="add">${Icon("plus", { size: 14 })}&nbsp; Add sale</button>
+          <button data-act="compare">${Icon("swap", { size: 14 })}&nbsp; Compare sales</button>
           <button data-act="share">⤴&nbsp; Share day</button>
           <div class="sep"></div>
-          <button data-act="clear" class="danger">🗑&nbsp; Delete all sales</button>
+          <button data-act="clear" class="danger">${Icon("trash", { size: 14 })}&nbsp; Delete all sales</button>
         </div>
       </div>
       <div id="dd-body"><div id="dd-col"></div></div>
@@ -436,10 +319,9 @@ const DayDetailUI = (() => {
 
   function render() {
     const c = col();
+    // Desktop: day totals + pay on the left, the sales record on the right.
+    const left = [heroHTML(), hoursCardHTML(), paySectionHTML()];
     const parts = [];
-    parts.push(heroHTML());
-    parts.push(hoursCardHTML());
-    parts.push(paySectionHTML());
     parts.push(ticketsSectionHTML());
     const ret = pureReturnLines(ctx.day);
     if (ret.length) parts.push(returnsSectionHTML(ret));
@@ -448,8 +330,8 @@ const DayDetailUI = (() => {
     const saved = comparisonsFor(ctx.data, ctx.dayKey);
     if (saved.length) parts.push(comparisonsSectionHTML(saved));
     parts.push(journalSectionHTML());
-    parts.push(`<div style="height:20px"></div>`);
-    c.innerHTML = parts.join("");
+    c.classList.add("two");
+    c.innerHTML = `<div class="dd-left">${left.join("")}</div><div class="dd-right">${parts.join("")}</div>`;
     bindSectionEvents();
   }
 
@@ -497,13 +379,13 @@ const DayDetailUI = (() => {
     return `
       <div class="dd-card">
         <button class="dd-hours" id="dd-hours-btn">
-          <span class="ic">${isOff ? "📅" : "🕐"}</span>
+          <span class="ic">${isOff ? Icon("calendar", { size: 20 }) : Icon("clock", { size: 20 })}</span>
           <span class="grow" style="flex:1">
             <div class="dd-sec-h">${esc(title)}</div>
             <div class="dd-sec-sub">${esc(sub)}</div>
             ${pills ? `<div style="margin-top:6px;display:flex;gap:6px">${pills}</div>` : ""}
           </span>
-          <span style="color:var(--muted)">✎</span>
+          <span style="color:var(--muted)">${Icon("edit", { size: 14 })}</span>
         </button>
       </div>`;
   }
@@ -526,7 +408,7 @@ const DayDetailUI = (() => {
         : `<span style="color:var(--accent)">You cleared ${money(pay.surplus)} over minimum wage</span>`;
       rows.push(`
         <div class="dd-row">
-          <span style="font-size:20px">🚶</span>
+          <span style="color:var(--navy-bright)">${Icon("store", { size: 20 })}</span>
           <div class="grow"><div class="t1">Open floor</div>
             <div class="t2">Commission + base</div>
             <div class="t2" style="font-weight:600">${cleared}</div></div>
@@ -534,13 +416,13 @@ const DayDetailUI = (() => {
         </div>`);
     }
     if (premium.openingHours > 0) {
-      rows.push(premiumRowHTML("🌅", "Opening shift", premium.openingHours, MW));
+      rows.push(premiumRowHTML("sunrise", "Opening shift", premium.openingHours, MW));
     }
     if (premium.closingHours - otInPremium > 0.005) {
-      rows.push(premiumRowHTML("🌇", "Closing shift", premium.closingHours - otInPremium, MW));
+      rows.push(premiumRowHTML("sunset", "Closing shift", premium.closingHours - otInPremium, MW));
     }
-    if (ot15 > 0.005) rows.push(otRowHTML("⚡", "Overtime ×1.5", ot15, MW * 1.5));
-    if (ot2 > 0.005) rows.push(otRowHTML("🐇", "Double time ×2", ot2, MW * 2));
+    if (ot15 > 0.005) rows.push(otRowHTML("zap", "Overtime ×1.5", ot15, MW * 1.5));
+    if (ot2 > 0.005) rows.push(otRowHTML("flame", "Double time ×2", ot2, MW * 2));
 
     rows.push(`
       <div class="dd-row">
@@ -580,8 +462,8 @@ const DayDetailUI = (() => {
   function premiumRowHTML(icon, name, hours, rate) {
     return `
       <div class="dd-row">
-        <span style="font-size:20px">${icon}</span>
-        <div class="grow"><div class="t1">${name} shift</div>
+        <span style="color:var(--amber);display:inline-flex">${Icon(icon, { size: 20 })}</span>
+        <div class="grow"><div class="t1">${name}</div>
           <div class="t2">${hours.toFixed(1)} hrs × $${rate.toFixed(2)}</div></div>
         <div class="amt">${money(hours * rate)}</div>
       </div>`;
@@ -590,7 +472,7 @@ const DayDetailUI = (() => {
   function otRowHTML(icon, name, hours, rate) {
     return `
       <div class="dd-row">
-        <span style="font-size:20px">${icon}</span>
+        <span style="color:var(--accent);display:inline-flex">${Icon(icon, { size: 20 })}</span>
         <div class="grow"><div class="t1">${name}</div>
           <div class="t2">${hours.toFixed(1)} hrs × $${rate.toFixed(2)}</div></div>
         <div class="amt" style="color:var(--accent)">${money(hours * rate)}</div>
@@ -625,8 +507,8 @@ const DayDetailUI = (() => {
     const n = customerCount(day);
     let inner;
     if (!day.tickets.length) {
-      inner = `<div class="dd-card"><div class="dd-empty">🛒<br>No tickets yet<br>
-        <span style="font-size:13px">Use ⋯ → Add sale to log one for this day.</span></div></div>`;
+      inner = `<div class="dd-card"><div class="dd-empty">${Icon("cart", { size: 28 })}<br>No tickets yet<br>
+        <span style="font-size:13px">Use the menu at the top right and choose Add sale.</span></div></div>`;
     } else {
       const sorted = [...day.tickets]
         .map((t, i) => ({ t, i }))
@@ -656,8 +538,8 @@ const DayDetailUI = (() => {
           <span class="dd-dot" style="background:${l.isReturn ? "var(--red)" : "var(--blue)"}"></span>
           <span class="p">${esc(l.product) || "—"}</span>
           <span class="q">×${l.quantity}</span>
-          <button class="x" data-line-edit="${ticketIndex}:${li}" title="Edit line" style="color:var(--blue)">✎</button>
-          <button class="x" data-line-del="${ticketIndex}:${li}" title="Delete line" style="color:var(--red)">✕</button>
+          <button class="x" data-line-edit="${ticketIndex}:${li}" title="Edit line" aria-label="Edit line" style="color:var(--blue)">${Icon("edit", { size: 14 })}</button>
+          <button class="x" data-line-del="${ticketIndex}:${li}" title="Delete line" aria-label="Delete line" style="color:var(--red)">${Icon("close", { size: 14 })}</button>
           <span class="c" style="color:${l.isReturn ? "var(--red)" : "var(--accent)"}">${money(comm)}</span>
         </div>`;
     }).join("");
@@ -671,8 +553,8 @@ const DayDetailUI = (() => {
         ${lines}
         ${ticket.customerNote ? `<div class="dd-note">${esc(ticket.customerNote)}</div>` : ""}
         <div class="acts">
-          <button class="dd-link" data-ticket-addline="${ticketIndex}">＋ Add line</button>
-          <button class="dd-link danger" data-ticket-del="${ticketIndex}">🗑 Delete ticket</button>
+          <button class="dd-link" data-ticket-addline="${ticketIndex}">${Icon("plus", { size: 14 })} Add line</button>
+          <button class="dd-link danger" data-ticket-del="${ticketIndex}">${Icon("trash", { size: 14 })} Delete ticket</button>
           <span style="flex:1"></span>
           <span class="dd-sec-sub">${ticketItemCount(ticket)} items</span>
         </div>
@@ -684,7 +566,7 @@ const DayDetailUI = (() => {
     const total = Math.abs(ret.reduce((s, l) => s + lineRevenue(l), 0));
     const rows = ret.map(l => `
       <div class="dd-line">
-        <span style="font-size:16px">↩️</span>
+        <span style="color:var(--red)">${Icon("return", { size: 16 })}</span>
         <div class="grow" style="flex:1;min-width:0">
           <div class="t1" style="font-size:14px">${esc(l.product) || "—"}</div>
           <div class="t2">${esc(l.brand || kindTitle(l.kind))} · ×${l.quantity}</div>
@@ -742,12 +624,12 @@ const DayDetailUI = (() => {
     const cards = list.map((c, i) => `
       <div class="dd-card dd-cmp" data-cmp="${i}">
         <div style="display:flex;align-items:center;gap:10px">
-          <span style="font-size:18px">⇄</span>
+          <span>${Icon("swap", { size: 18 })}</span>
           <div style="flex:1">
             <div class="vs">You vs ${esc(c.coworkerName || "Coworker")}</div>
             <div class="sc">${money((c.theirs || {}).revenue || 0)} vs your ${money((c.yours || {}).revenue || 0)}</div>
           </div>
-          <span style="color:var(--muted)">›</span>
+          <span style="color:var(--muted)">${Icon("chevron-right", { size: 14 })}</span>
         </div>
         <div class="dd-cmp-detail hidden" id="dd-cmp-${i}" style="display:none">
           ${cmpSideHTML("You", c.yours)}${cmpSideHTML(esc(c.coworkerName || "Coworker"), c.theirs)}
@@ -781,7 +663,7 @@ const DayDetailUI = (() => {
     const j = journalFor(ctx.data, ctx.dayKey);
     let head = `<div style="display:flex;align-items:baseline;gap:8px">
         <div class="dd-sec-h">Journal</div><span style="flex:1"></span>`;
-    if (j) head += `<button class="dd-link" id="dd-journal-edit">✎ Edit</button>`;
+    if (j) head += `<button class="dd-link" id="dd-journal-edit">${Icon("edit", { size: 14 })} Edit</button>`;
     else head += `<div class="dd-sec-sub">A blank page for how the day went</div>`;
     head += `</div>`;
 
@@ -801,10 +683,10 @@ const DayDetailUI = (() => {
       body = `
         <div class="dd-card">
           <button class="dd-blank" id="dd-journal-new">
-            <span class="ic">📖</span>
+            <span class="ic">${Icon("book", { size: 20 })}</span>
             <span><div class="dd-sec-h" style="font-size:15px">Write today's journal</div>
             <div class="dd-sec-sub">What happened, who you helped, anything worth keeping.</div></span>
-            <span style="flex:1"></span><span style="color:var(--muted)">›</span>
+            <span style="flex:1"></span><span style="color:var(--muted)">${Icon("chevron-right", { size: 14 })}</span>
           </button>
         </div>`;
     }
@@ -995,7 +877,7 @@ const DayDetailUI = (() => {
   function breakRowHTML(title, key, val) {
     const ctrl = val
       ? `<input type="time" data-break-time="${key}" value="${esc(val)}">`
-      : `<button class="dd-addtime" data-break-add="${key}">＋ Add time</button>`;
+      : `<button class="dd-addtime" data-break-add="${key}">${Icon("plus", { size: 13 })} Add time</button>`;
     return `<div class="dd-breakrow"><span class="t">${title}</span>${ctrl}</div>`;
   }
 

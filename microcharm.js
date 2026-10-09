@@ -675,20 +675,20 @@ const MicroCharmUI = (() => {
     html += `<div class="panel">` + sectionHeader("Connection", "Your keychain buddy") +
       `<div class="mc-conn"><span class="mc-dot"></span><strong>Not connected</strong></div>` +
       `<p class="mc-muted">Pairing unlocks when your MicroCharm arrives. You can still design your buddy and set reactions.</p>` +
-      `<button class="btn mc-pair" disabled>🔗 Pair</button>` +
+      `<button class="btn mc-pair" disabled>${Icon("link", { size: 14 })} Pair</button>` +
       `<div class="mc-tiny">Last synced —</div></div>`;
     // 2. Your Buddy
     html += `<button class="panel mc-rowbtn" id="mc-to-creator">` +
       `<span class="mc-thumb">${robotSVG(look, { width: 44, height: 52 })}</span>` +
       `<span class="mc-rowmain"><span class="mc-rowtitle">Your Buddy</span>` +
       `<span class="mc-rowsub">${esc(lookSummary(look))}</span></span>` +
-      `<span class="mc-chev">›</span></button>`;
+      `<span class="mc-chev">${Icon("chevron-right", { size: 14 })}</span></button>`;
     // 3. Reactions
     html += `<button class="panel mc-rowbtn" id="mc-to-reactions">` +
-      `<span class="mc-party">🎉</span>` +
+      `<span class="mc-party">${Icon("sparkles", { size: 22 })}</span>` +
       `<span class="mc-rowmain"><span class="mc-rowtitle">Reactions</span>` +
       `<span class="mc-rowsub">${esc(reactionsSummary(reactions))}</span></span>` +
-      `<span class="mc-chev">›</span></button>`;
+      `<span class="mc-chev">${Icon("chevron-right", { size: 14 })}</span></button>`;
     // 4. Stats preview
     html += `<div class="panel">` + sectionHeader("What your MicroCharm will show", "Live on device when paired");
     if (stats && day) {
@@ -736,7 +736,7 @@ const MicroCharmUI = (() => {
     const opts = PARTS[cat.catalog];
     const currentVal = cat.isAccent ? creatorDraft.accentHex : creatorDraft[cat.lookKey];
 
-    let html = `<div class="mc-backrow"><button class="mc-back" id="mc-creator-back">‹ MicroCharm</button></div>`;
+    let html = `<div class="mc-backrow"><button class="mc-back" id="mc-creator-back">${Icon("chevron-left", { size: 14 })} MicroCharm</button></div>`;
     html += `<div class="panel mc-preview">${robotSVG(creatorDraft, { width: 180, height: 210 })}</div>`;
     html += `<div class="mc-chips">` + CATEGORIES.map(c =>
       `<button class="mc-chip${c.key === cat.key ? " sel" : ""}" data-cat="${c.key}">${esc(c.title)}</button>`
@@ -746,7 +746,7 @@ const MicroCharmUI = (() => {
       const sel = String(currentVal).toLowerCase() === String(val).toLowerCase();
       const swatch = cat.isAccent
         ? `<span class="mc-swatch" style="background:${esc(o.hex)}"></span>`
-        : `<span class="mc-check">${sel ? "●" : "○"}</span>`;
+        : `<span class="mc-check">${sel ? Icon("check-circle", { size: 16 }) : ""}</span>`;
       return `<button class="mc-opt${sel ? " sel" : ""}" data-val="${esc(val)}">${swatch}<span>${esc(o.title)}</span></button>`;
     }).join("") + `</div>`;
     html += `<div class="mc-foot"><button class="btn mc-primary" id="mc-save-look">Save</button>` +
@@ -789,7 +789,7 @@ const MicroCharmUI = (() => {
       renderReactions(box);
     }
 
-    let html = `<div class="mc-backrow"><button class="mc-back" id="mc-react-back">‹ MicroCharm</button></div>`;
+    let html = `<div class="mc-backrow"><button class="mc-back" id="mc-react-back">${Icon("chevron-left", { size: 14 })} MicroCharm</button></div>`;
     html += `<div class="panel">` + sectionHeader("Cheers", "Fires on real live numbers only") +
       mcToggle("cph", "CPH steps", "Cheer each whole CPH step crossed (1.0, 2.0, 3.0…)", r.cphStepsEnabled) +
       `<div class="mc-hr"></div>` +
@@ -806,7 +806,7 @@ const MicroCharmUI = (() => {
         `<button class="mc-vibe${r.voiceVibe === v.id ? " sel" : ""}" data-vibe="${v.id}">` +
         `<span class="mc-rowmain"><span class="mc-rowtitle">${esc(v.title)}</span>` +
         `<span class="mc-rowsub">${esc(voiceMessage("cphStep", v.id, null, 2.0))}</span></span>` +
-        (r.voiceVibe === v.id ? `<span class="mc-vibecheck">✓</span>` : "") +
+        (r.voiceVibe === v.id ? `<span class="mc-vibecheck">${Icon("check", { size: 14 })}</span>` : "") +
         `</button>` + (i < VIBES.length - 1 ? `<div class="mc-hr"></div>` : "")
       ).join("") +
       `<div class="mc-hr"></div>` +
@@ -814,7 +814,7 @@ const MicroCharmUI = (() => {
       `<input class="mc-input" id="mc-note" maxlength="80" placeholder="e.g. call me Rhy, keep it short" value="${esc(r.vibeNote || "")}">` +
       `<div class="mc-tiny"><span id="mc-notecount">${(r.vibeNote || "").length}</span>/80 — a "call me &lt;name&gt;" note adds your name to cheers.</div></div></div>`;
     html += `<div class="panel">` + sectionHeader("Preview", "Hear it before your shift") +
-      `<button class="btn mc-primary" id="mc-test">🎉 Test cheer</button>` +
+      `<button class="btn mc-primary" id="mc-test">${Icon("sparkles", { size: 14 })} Test cheer</button>` +
       `<div class="mc-tiny">Plays a sample "2.0 CPH reached" cheer with your current vibe — doesn't touch your real numbers.</div></div>`;
     html += `<div class="mc-tiny mc-center">Changes save automatically.</div>`;
 
@@ -858,62 +858,7 @@ const MicroCharmUI = (() => {
     if (cssDone || !document.head) return;
     cssDone = true;
     const s = document.createElement("style");
-    s.textContent = `
-.mc-sec-title{font-size:15px;font-weight:700}
-.mc-sec-sub{font-size:12px;color:var(--muted);margin-top:2px}
-.mc-sec{margin-bottom:10px}
-.mc-muted{font-size:13px;color:var(--muted);line-height:1.5}
-.mc-tiny{font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.5}
-.mc-center{text-align:center}
-.mc-conn{display:flex;align-items:center;gap:10px;margin:8px 0}
-.mc-dot{width:10px;height:10px;border-radius:50%;background:var(--muted);opacity:.5}
-.mc-pair{opacity:.6}
-.mc-rowbtn{display:flex;align-items:center;gap:14px;width:100%;text-align:left;cursor:pointer;color:inherit;font:inherit}
-.mc-thumb{background:var(--card2,#222);border-radius:10px;padding:6px;display:flex}
-.mc-party{font-size:24px;width:56px;text-align:center}
-.mc-rowmain{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
-.mc-rowtitle{font-size:14px;font-weight:600}
-.mc-rowsub{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.mc-chev{color:var(--muted);font-size:18px}
-.mc-statrow{display:flex;justify-content:space-between;padding:8px 0;font-size:14px}
-.mc-statrow strong{color:var(--accent)}
-.mc-cheerrow{display:flex;gap:12px;padding:8px 0;font-size:14px;align-items:baseline}
-.mc-cheertime{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap;padding-top:2px}
-.mc-hr{height:1px;background:var(--border);margin:6px 0}
-.mc-backrow{margin-bottom:10px}
-.mc-back{background:none;border:none;color:var(--accent);font-size:14px;font-weight:600;cursor:pointer;padding:4px 0}
-.mc-preview{display:flex;justify-content:center;padding:20px}
-.mc-chips{display:flex;gap:8px;overflow-x:auto;padding:4px 2px 10px}
-.mc-chip{flex:0 0 auto;padding:8px 14px;border-radius:999px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:13px;font-weight:600;cursor:pointer}
-.mc-chip.sel{background:var(--accent);border-color:var(--accent);color:#fff}
-.mc-opts{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;margin-bottom:16px}
-.mc-opt{display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 6px;border-radius:12px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:12px;font-weight:600;cursor:pointer}
-.mc-opt.sel{border:2px solid var(--accent);padding:11px 5px}
-.mc-check{font-size:20px;color:var(--muted)}
-.mc-opt.sel .mc-check{color:var(--accent)}
-.mc-swatch{width:34px;height:34px;border-radius:50%;border:1px solid var(--border)}
-.mc-foot{display:flex;flex-direction:column;gap:10px;margin-top:4px}
-.mc-primary{width:100%}
-.mc-plain{background:none;border:none;color:var(--muted);font-size:14px;font-weight:600;cursor:pointer;padding:8px}
-.mc-toggle{display:flex;align-items:center;gap:12px;cursor:pointer;padding:4px 0}
-.mc-toggle input{display:none}
-.mc-switch{position:relative;width:44px;height:26px;border-radius:999px;background:var(--border);flex:0 0 auto;transition:background .15s}
-.mc-switch::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:left .15s}
-.mc-toggle input:checked+.mc-switch{background:var(--accent)}
-.mc-toggle input:checked+.mc-switch::after{left:21px}
-.mc-input{width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--card2,var(--card));color:var(--text);font-size:14px;font-weight:600}
-.mc-vibe{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:none;border:none;color:inherit;font:inherit;cursor:pointer;padding:8px 0}
-.mc-vibecheck{color:var(--accent);font-size:18px;font-weight:700}
-.mc-notewrap{margin-top:6px;display:flex;flex-direction:column;gap:8px}
-#mc-cheer-host{position:fixed;top:8px;left:0;right:0;z-index:9999;display:flex;justify-content:center;pointer-events:none;padding:0 16px}
-.mc-cheer{pointer-events:auto;display:flex;gap:12px;align-items:flex-start;text-align:left;background:var(--card);border:1px solid var(--border);border-radius:18px;padding:14px;max-width:560px;width:100%;box-shadow:0 14px 30px rgba(0,0,0,.25);cursor:pointer;color:inherit;font:inherit}
-.mc-cheer-bot{flex:0 0 auto}
-.mc-cheer-text{display:flex;flex-direction:column;gap:3px;min-width:0}
-.mc-cheer-kicker{font-size:10.5px;font-weight:700;letter-spacing:.5px;color:var(--muted);text-transform:uppercase}
-.mc-cheer-msg{font-size:14px;font-weight:600;line-height:1.4}
-.btn{background:var(--accent);color:#fff;border:none;border-radius:10px;padding:12px 16px;font-size:14px;font-weight:700;cursor:pointer}
-.btn:disabled{opacity:.5;cursor:default}
-`;
+    s.textContent = `/* moved to components.css */`;
     document.head.appendChild(s);
   }
 

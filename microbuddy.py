@@ -16,24 +16,20 @@ and pushed when back online. No password, no token juggling, no public URL
 or HTTPS needed — the dashboard stays private on the tailnet/LAN, and the
 Docker image ships with zero secrets.
 
-Per-user preferences (theme, AI config) are stored server-side in
-users/<apple_sub>.json and synced to the client's IndexedDB on sign-in.
+Per-user server-side settings (Buddy AI config + chat history) live in
+users/<sub>.json.
 
-Theme sync: the iPhone app is the source of truth for the theme. It writes
-its current theme to a shared Supabase `user_preferences` table; the
-dashboard reads it on login/sync (GET /api/preferences prefers the shared
-theme, falling back to the local file) and writes back there when the theme
-is changed from the dashboard (bidirectional). Everything still works if the
-shared table doesn't exist yet.
+Theme sync: the iPhone app is the source of truth. The browser reads
+profile.themePreference straight from the user's own backup blob
+(user_backups.data) and falls back to a manual pick stored in that browser.
+The server keeps no theme state of its own (the old shared
+`user_preferences` table code was removed in 2.0.0).
 
 Config (env vars or files in BASE_DIR):
   MICROBUDDY_TOKEN   bearer token for the MCP server (.token file)
   SUPABASE_URL       Supabase project URL (defaults to the shared backend)
   SUPABASE_ANON_KEY  Supabase public anon key, used to verify the phone's
                      session during pairing (.supabase_anon_key file)
-  SUPABASE_SERVICE_KEY  (optional) Supabase key for the shared user_preferences
-                        table (.supabase_service_key file); falls back to
-                        MICROBUDDY_TOKEN if unset
 
 Static files served: /, /dashboard.html, /manifest.json, /sw.js, /themes.css,
   /db.js, /sync.js, /qrcode.min.js, /settings.js, /buddy.js, /icons/*
@@ -47,10 +43,7 @@ API (auth required unless noted):
   POST /api/pair/revoke   {} -> {ok}  (public; unlinks: clears pair codes,
                        browser sessions, and the widget token)
   GET  /logout
-  GET  /api/preferences        {theme, ai_config} (api_key masked)
-                                 theme prefers the shared iPhone theme
-  POST /api/preferences        {theme?, ai_config?} -> merged + saved
-                                 (theme also pushed to the shared table)
+  GET  /api/preferences        {ai_config} (api_key masked; no theme)
   GET  /api/ai-config          {provider, server_url, model, api_key_set}
   POST /api/ai-config          {provider, server_url, model, api_key?}
   GET  /api/chat               [{id, title, updated_at, message_count}] (session list)
@@ -60,8 +53,11 @@ API (auth required unless noted):
                                -> {session_id, title, reply, user_ts, reply_ts}
                                Appends user msgs + AI reply to the stored
                                conversation (server is canonical; clients sync).
-  GET  /api/day-summary, /api/day-sales, /api/days, /api/products,
-       /api/stats, /api/take-home, /api/schedule   (MCP proxy)
+  GET  /api/day-summary?date=, /api/day-sales?date=,
+       /api/days?start=&end=&limit=, /api/products?q=&limit=,
+       /api/stats?start=&end=, /api/take-home?start=&end=,
+       /api/schedule?start=&end=        (MCP proxy; the browser builds its
+                                          views from the backup blob)
 """
 from __future__ import annotations
 
@@ -77,7 +73,8 @@ import time
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import datetime as _dt
 from urllib.parse import urlparse, parse_qs, quote
 
 MCP_HOST = "tgarraczeevyrjfxzkkf.supabase.co"
@@ -138,7 +135,7 @@ APP_BUNDLE_ID = _read_secret("APPLE_APP_BUNDLE_ID", ".apple_app_id")
 # reboot. Unlink (/api/pair/revoke) and /logout clear it and re-save, so a
 # wiped login can never be resurrected by a restart.
 SESSIONS: dict[str, dict] = {}
-DASHBOARD_VERSION = "1.1.13"
+DASHBOARD_VERSION = "2.0.0"
 SESSIONS_FILE = os.path.join(BASE_DIR, ".sessions.json")
 _rpc_id = 0
 
@@ -244,13 +241,15 @@ def _fmt_money(v) -> str:
         return "$0"
 
 
-def _pay_period_containing(day: datetime.date):
-    # Biweekly pay periods anchored on iOS payday Sep 18, 2026.
-    anchor = datetime.date(2026, 9, 18)
-    delta = (day - anchor).days
-    n = delta // 14
-    start = anchor + datetime.timedelta(days=n * 14)
-    return start, start + datetime.timedelta(days=13)
+def _pay_period_containing(day: "_dt.date"):
+    """Biweekly pay period containing `day` (port of PayPeriod.containing):
+    the 14 days ending the day before the next payday, paydays every 14
+    days from the Sep 18, 2026 anchor (payday itself starts a new period)."""
+    anchor = _dt.date(2026, 9, 18)
+    delta = (anchor - day).days
+    periods_away = -((-(1 - delta)) // 14)  # ceil((1 - delta) / 14)
+    payday = anchor + _dt.timedelta(days=14 * periods_away)
+    return payday - _dt.timedelta(days=14), payday - _dt.timedelta(days=1)
 
 
 def _mint_mcp_token(user_id: str, access_token: str) -> str:
@@ -291,7 +290,6 @@ def _user_path(sub: str) -> str:
 
 def default_prefs() -> dict:
     return {
-        "theme": "dark",
         "ai_config": {
             "provider": "disabled",
             "server_url": "",
@@ -318,9 +316,6 @@ def load_prefs(sub: str) -> dict:
         with open(_user_path(sub)) as f:
             stored = json.load(f)
         if isinstance(stored, dict):
-            _nt = normalize_theme(str(stored.get("theme") or ""))
-            if _nt:
-                prefs["theme"] = _nt
             ac = stored.get("ai_config")
             if isinstance(ac, dict):
                 for k in ("provider", "server_url", "model", "api_key"):
@@ -387,120 +382,15 @@ def public_ai_config(prefs: dict) -> dict:
 
 
 def public_prefs(prefs: dict) -> dict:
-    return {"theme": prefs.get("theme", "dark"), "ai_config": public_ai_config(prefs)}
+    return {"ai_config": public_ai_config(prefs)}
 
 
-# ================= Shared theme (iPhone <-> dashboard) =================
-#
-# The iPhone app is the source of truth for the theme. It writes its current
-# theme to a shared `user_preferences` table in Supabase; the dashboard reads
-# it on login/sync and applies it automatically, and writes back here too when
-# the theme is changed from the dashboard (bidirectional).
-#
-# Christian: create this table in your Supabase project and have the iOS app
-# write its current theme there whenever it changes:
-#
-#   create table if not exists user_preferences (
-#     id text primary key,                 -- Apple `sub` (the user's stable id)
-#     theme text not null default 'dark', -- one of: dark, win95, frosted, terminal
-#     updated_at timestamptz not null default now()
-#   );
-#   -- Recommended: enable RLS and add a policy so each user can only
-#   -- read/write their own row, or keep RLS off and use the service key only.
-#
-# Dashboard behavior:
-#   GET  /api/preferences -> shared theme if reachable & valid, else local file
-#   POST /api/preferences -> writes the local file AND the shared table (best effort)
-# If Supabase is unreachable, misconfigured, or the table doesn't exist yet,
-# everything falls back to the local users/<sub>.json file with a log line.
-
-SUPABASE_REST = f"https://{MCP_HOST}/rest/v1"
-SUPABASE_KEY = _read_secret("SUPABASE_SERVICE_KEY", ".supabase_service_key")
+# ================= Supabase config =================
 # Public project config for pairing verification. The anon key is public by
 # design (it ships inside the phone app); it only ever verifies the session
 # the phone hands over during QR pairing.
 SUPABASE_URL = os.environ.get("SUPABASE_URL", f"https://{MCP_HOST}")
 SUPABASE_ANON_KEY = _read_secret("SUPABASE_ANON_KEY", ".supabase_anon_key")
-_shared_theme_cache: dict = {}  # sub -> (fetched_at, theme|None)
-_SHARED_THEME_TTL = 60.0
-
-
-def _supabase_key() -> str:
-    # Prefer an explicit Supabase service/anon key; fall back to the MCP
-    # bearer token in case it doubles as a Supabase JWT.
-    return SUPABASE_KEY or TOKEN
-
-
-def _supabase_service_rest(method: str, path: str, query: str = "",
-                   body: "bytes | None" = None,
-                   extra_headers: "dict | None" = None) -> tuple:
-    """Service-key Supabase REST (server-side ops). Distinct from the
-    user-scoped _supabase_rest above which uses the caller's session."""
-    key = _supabase_key()
-    if not key:
-        raise RuntimeError("no Supabase key configured")
-    url = SUPABASE_REST + path + (("?" + query) if query else "")
-    headers = {
-        "apikey": key,
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-        "User-Agent": "microbuddy-dashboard/1.0",
-    }
-    if extra_headers:
-        headers.update(extra_headers)
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return resp.status, resp.read().decode()
-
-
-def get_shared_theme(sub: str) -> "str | None":
-    """Read the iPhone's theme from Supabase user_preferences.
-
-    Returns the theme string, or None on ANY failure (no key, no table,
-    network error, invalid value) — callers fall back to the local theme.
-    """
-    if not sub:
-        return None
-    now = time.time()
-    cached = _shared_theme_cache.get(sub)
-    if cached and now - cached[0] < _SHARED_THEME_TTL:
-        return cached[1]
-    theme = None
-    try:
-        _status, data = _supabase_service_rest(
-            "GET", "/user_preferences",
-            f"id=eq.{quote(sub, safe='')}&select=theme")
-        rows = json.loads(data or "[]")
-        if isinstance(rows, list) and rows:
-            t = rows[0].get("theme")
-            theme = normalize_theme(str(t or ""))
-    except Exception as e:
-        print(f"[prefs] shared theme read failed (falling back to local theme): {e}",
-              flush=True)
-    _shared_theme_cache[sub] = (now, theme)
-    return theme
-
-
-def set_shared_theme(sub: str, theme: str) -> bool:
-    """Write the theme to Supabase user_preferences (best effort)."""
-    _nt = normalize_theme(theme)
-    if not sub or not _nt:
-        return False
-    theme = _nt
-    try:
-        body = json.dumps({
-            "id": sub,
-            "theme": theme,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).encode()
-        _supabase_service_rest("POST", "/user_preferences", "",
-                       body, {"Prefer": "resolution=merge-duplicates"})
-        _shared_theme_cache[sub] = (time.time(), theme)
-        return True
-    except Exception as e:
-        print(f"[prefs] shared theme write failed (theme saved locally only): {e}",
-              flush=True)
-        return False
 
 
 # ================= Apple id_token verification (RS256, stdlib only) =================
@@ -633,8 +523,13 @@ def mcp_call(tool: str, args: dict, token: str | None = None) -> dict:
     res = json.loads(text)
     if res.get("error"):
         raise RuntimeError(f"MCP error: {json.dumps(res['error'])[:500]}")
-    result = res.get("result", {})
+    result = res.get("result", {}) or {}
     content = result.get("content", [])
+    if result.get("isError"):
+        msg = ""
+        if content and isinstance(content, list):
+            msg = str(content[0].get("text", ""))
+        raise RuntimeError(f"MCP tool {tool} failed: {msg[:300] or 'unknown error'}")
     if content and isinstance(content, list):
         txt = content[0].get("text", "{}")
         try:
@@ -844,14 +739,23 @@ def list_ai_models(provider: str, base_url: str, api_key: str = "") -> list:
     return sorted(set(names))
 
 
+# Dashboard path -> (MCP tool name, {query param -> tool argument}).
+# Tool names and argument names match the mcp-server edge function exactly
+# (get_day_summary, list_days, ... with start_date / end_date).
 ROUTES = {
-    "/api/day-summary": ("day-summary", ["date"]),
-    "/api/day-sales": ("day-sales", ["date"]),
-    "/api/days": ("list-days", ["start", "end", "limit"]),
-    "/api/products": ("search-products", ["query", "limit"]),
-    "/api/stats": ("stats", ["start", "end"]),
-    "/api/take-home": ("take-home", ["start", "end"]),
-    "/api/schedule": ("schedule", ["start", "end"]),
+    "/api/day-summary": ("get_day_summary", {"date": "date"}),
+    "/api/day-sales": ("get_day_sales", {"date": "date"}),
+    "/api/days": ("list_days", {"start": "start_date", "end": "end_date",
+                                "start_date": "start_date", "end_date": "end_date",
+                                "limit": "limit"}),
+    "/api/products": ("search_products", {"q": "query", "query": "query",
+                                          "limit": "limit"}),
+    "/api/stats": ("get_stats", {"start": "start_date", "end": "end_date",
+                                 "start_date": "start_date", "end_date": "end_date"}),
+    "/api/take-home": ("get_take_home", {"start": "start_date", "end": "end_date",
+                                         "start_date": "start_date", "end_date": "end_date"}),
+    "/api/schedule": ("get_schedule", {"start": "start_date", "end": "end_date",
+                                       "start_date": "start_date", "end_date": "end_date"}),
 }
 
 STATIC_FILES = {
@@ -861,6 +765,11 @@ STATIC_FILES = {
     "/manifest.json": ("manifest.json", "application/manifest+json"),
     "/sw.js": ("sw.js", "application/javascript; charset=utf-8"),
     "/themes.css": ("themes.css", "text/css; charset=utf-8"),
+    "/components.css": ("components.css", "text/css; charset=utf-8"),
+    "/icons.js": ("icons.js", "application/javascript; charset=utf-8"),
+    "/sales.js": ("sales.js", "application/javascript; charset=utf-8"),
+    "/sale-entry.js": ("sale-entry.js", "application/javascript; charset=utf-8"),
+    "/badges.js": ("badges.js", "application/javascript; charset=utf-8"),
     "/db.js": ("db.js", "application/javascript; charset=utf-8"),
     "/sync.js": ("sync.js", "application/javascript; charset=utf-8"),
     "/qrcode.min.js": ("qrcode.min.js", "application/javascript; charset=utf-8"),
@@ -919,7 +828,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        if self.path == "/sw.js":
+        # The app shell must never go stale behind an old cache: browsers
+        # revalidate every load (cheap 200s on a LAN) and the service worker
+        # is network-first, so a new image shows up on the next refresh.
+        if ctype.startswith(("text/html", "text/css", "application/javascript",
+                             "application/manifest+json")):
             self.send_header("Cache-Control", "no-cache")
         if extra:
             for k, v in extra.items():
@@ -959,10 +872,10 @@ class Handler(BaseHTTPRequestHandler):
                 }).encode())
                 return
             try:
-                today = datetime.date.today()
+                today = _dt.date.today()
                 start, end = _pay_period_containing(today)
                 stats = mcp_call("get_stats", {
-                    "start": start.isoformat(), "end": end.isoformat(),
+                    "start_date": start.isoformat(), "end_date": end.isoformat(),
                 }, wtoken)
                 taxes = stats.get("estimated_taxes", {}) or {}
                 self._send(200, json.dumps({
@@ -986,6 +899,7 @@ class Handler(BaseHTTPRequestHandler):
                 "win95": "icons/icon-win95.png",
                 "terminal": "icons/icon-terminal.png",
                 "frosted": "icons/icon-modern.png",
+                "modern": "icons/icon-modern.png",
                 "dark": "icons/icon-og.png",
             }
             icon_file = icon_map.get(theme, "icons/icon-og.png")
@@ -1098,19 +1012,9 @@ class Handler(BaseHTTPRequestHandler):
         sub = sess.get("sub", "")
 
         if path == "/api/preferences":
+            # Theme is no longer server state: the browser reads it from the
+            # phone's backup blob. Only the (masked) AI config is returned.
             prefs = load_prefs(sub)
-            # The iPhone is the source of truth for the theme: prefer the
-            # shared (phone-written) theme when it's reachable.
-            shared = get_shared_theme(sub)
-            if shared:
-                if prefs.get("theme") != shared:
-                    prefs["theme"] = shared
-                    try:
-                        save_prefs(sub, prefs)
-                    except OSError:
-                        pass
-                    print(f"[prefs] theme taken from iPhone (shared): {shared}",
-                          flush=True)
             self._send(200, json.dumps(public_prefs(prefs)).encode())
             return
 
@@ -1177,17 +1081,17 @@ class Handler(BaseHTTPRequestHandler):
             if not (sess_token or TOKEN):
                 self._send(500, json.dumps({"error": "no token configured"}).encode())
                 return
-            tool, arg_names = ROUTES[path]
+            tool, arg_map = ROUTES[path]
             args: dict = {}
-            for name in arg_names:
-                vals = qs.get(name)
-                if vals:
+            for qname, aname in arg_map.items():
+                vals = qs.get(qname)
+                if vals and aname not in args:
                     v = vals[0]
-                    if name == "limit" and v.isdigit():
-                        v = int(v)
-                    args[name] = v
-            if tool == "search-products" and "query" not in args and qs.get("q"):
-                args["query"] = qs["q"][0]
+                    if aname == "limit":
+                        v = int(v) if v.isdigit() else None
+                        if v is None:
+                            continue
+                    args[aname] = v
             try:
                 result = mcp_call(tool, args, token=sess_token)
                 self._send(200, json.dumps(result).encode())
@@ -1245,7 +1149,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 length = int(self.headers.get("Content-Length", 0) or 0)
                 body = json.loads(self.rfile.read(length) or b"{}")
-                theme = str(body.get("theme", "dark"))
+                theme = normalize_theme(str(body.get("theme", "dark"))) or "dark"
                 icon_map = {"modern": "icon-modern.png",
                             "terminal": "icon-terminal.png",
                             "win95": "icon-win95.png"}
@@ -1419,13 +1323,6 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/preferences":
             body = self._read_json_body()
             prefs = load_prefs(sub)
-            theme_changed = False
-            _bt = normalize_theme(str(body.get("theme") or "")) if isinstance(body.get("theme"), str) else None
-            if _bt:
-                if prefs.get("theme") != _bt:
-                    theme_changed = True
-                    body["theme"] = _bt
-                prefs["theme"] = body["theme"]
             ac = body.get("ai_config")
             if isinstance(ac, dict):
                 cfg = prefs["ai_config"]
@@ -1438,10 +1335,6 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(ac.get("api_key"), str) and ac["api_key"]:
                     cfg["api_key"] = ac["api_key"]
             save_prefs(sub, prefs)
-            # Bidirectional: push a dashboard theme change to the shared
-            # table too, so the iPhone can pick it up.
-            if theme_changed:
-                set_shared_theme(sub, prefs["theme"])
             self._send(200, json.dumps(public_prefs(prefs)).encode())
             return
 
@@ -1554,6 +1447,9 @@ if __name__ == "__main__":
     else:
         print(f"Apple app bundle ID: {APP_BUNDLE_ID}")
     os.makedirs(USERS_DIR, exist_ok=True)
-    server = HTTPServer(("0.0.0.0", PORT), Handler)
+    # Threaded: a slow Buddy AI reply must never block the dashboard shell,
+    # pairing polls, or other tabs.
+    ThreadingHTTPServer.daemon_threads = True
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"Micro Buddy dashboard on :{PORT} (QR app-pairing auth)")
     server.serve_forever()

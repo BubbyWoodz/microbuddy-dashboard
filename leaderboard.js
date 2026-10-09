@@ -552,42 +552,7 @@ const LeaderboardUI = (() => {
     if (document.getElementById("lb-css")) return;
     const st = document.createElement("style");
     st.id = "lb-css";
-    st.textContent = `
-    .lb-wrap { display:flex; flex-direction:column; gap:12px; }
-    .lb-toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
-    .lb-ranges { display:flex; gap:6px; flex-wrap:wrap; }
-    .lb-range { padding:6px 12px; border-radius:999px; border:1px solid var(--border);
-      background:transparent; color:var(--muted); font-size:13px; font-weight:600; cursor:pointer; }
-    .lb-range.active { background:var(--accent); border-color:var(--accent); color:#fff; }
-    .lb-flash { display:flex; align-items:center; gap:8px; padding:10px 14px; border-radius:12px;
-      background:var(--card); border:1px solid var(--border); font-size:13px; font-weight:600; }
-    .lb-row { display:flex; align-items:center; gap:10px; padding:12px 10px; }
-    .lb-rank { width:26px; height:26px; border-radius:50%; display:flex; align-items:center;
-      justify-content:center; font-size:12px; font-weight:800; color:var(--muted); flex:none; }
-    .lb-rank.r1 { background:var(--amber); color:#fff; }
-    .lb-rank.r2 { background:var(--blue); color:#fff; }
-    .lb-rank.r3 { background:var(--accent); color:#fff; }
-    .lb-you { background:color-mix(in srgb, var(--accent) 12%, transparent); border-radius:12px; }
-    .lb-cols { display:flex; padding:0 16px; }
-    .lb-col { width:64px; text-align:right; font-size:9px; font-weight:800; letter-spacing:.6px;
-      color:var(--muted); text-transform:uppercase; flex:none; }
-    .lb-val { width:64px; text-align:right; font-size:13px; font-weight:700; flex:none; }
-    .lb-identity { min-width:0; }
-    .lb-name { font-size:14px; font-weight:600; color:var(--text); white-space:nowrap;
-      overflow:hidden; text-overflow:ellipsis; }
-    .lb-sub { font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden;
-      text-overflow:ellipsis; }
-    .lb-sheet-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:90;
-      display:flex; align-items:flex-end; justify-content:center; }
-    .lb-sheet { background:var(--bg); border-radius:16px 16px 0 0; width:100%; max-width:520px;
-      max-height:80vh; display:flex; flex-direction:column; padding:16px; }
-    .lb-search { display:flex; align-items:center; gap:10px; background:var(--card);
-      border:1px solid var(--border); border-radius:12px; padding:12px 14px; margin-bottom:12px; }
-    .lb-search input { flex:1; background:transparent; border:none; outline:none;
-      color:var(--text); font-size:15px; }
-    .lb-result { display:flex; align-items:center; gap:12px; padding:12px 4px;
-      border-bottom:1px solid var(--border); }
-    `;
+    st.textContent = `/* moved to components.css */`;
     document.head.appendChild(st);
   }
 
@@ -595,7 +560,7 @@ const LeaderboardUI = (() => {
     const el = container && container.querySelector("#lb-flash-slot");
     if (!el) return;
     el.innerHTML = flashMsg
-      ? `<div class="lb-flash">✓ ${esc(flashMsg)}</div>` : "";
+      ? `<div class="lb-flash">${Icon("check", { size: 14 })} ${esc(flashMsg)}</div>` : "";
   }
 
   function rankBadge(i) {
@@ -643,7 +608,7 @@ const LeaderboardUI = (() => {
         (r.requester_username ? `<div class="li-sub">@${esc(r.requester_username)}</div>` : "") +
         `</div><div style="display:flex;gap:8px;align-items:center">` +
         `<span class="pill">Waiting…</span>` +
-        `<button class="btn ghost" data-lb-cancel="${esc(r.id)}"${dis} style="padding:6px 10px;font-size:13px">✕</button>` +
+        `<button class="btn ghost" data-lb-cancel="${esc(r.id)}"${dis} style="padding:6px 10px;font-size:13px" aria-label="Cancel">${Icon("close", { size: 14 })}</button>` +
         `</div></div>`;
     }
     return h + `</div>`;
@@ -669,7 +634,7 @@ const LeaderboardUI = (() => {
       `<div class="li-sub" style="margin:-6px 0 4px">Ordered by overall performance — the numbers shown stay friendly</div>`;
     if (!rows.length || rows.every(r => r.moneySold === 0 && r.plans === 0 && r.cph === 0)) {
       h += `<div class="panel" style="text-align:center;padding:28px 16px">` +
-        `<div style="font-size:28px;margin-bottom:8px">📊</div>` +
+        `<div style="color:var(--accent);margin-bottom:8px">${Icon("chart", { size: 30 })}</div>` +
         `<div style="font-weight:700;margin-bottom:4px">No numbers this range</div>` +
         `<div style="color:var(--muted);font-size:13px">Once you and your friends log sales in this range, the board fills in.</div></div>`;
       return h;
@@ -683,7 +648,7 @@ const LeaderboardUI = (() => {
 
   function emptyHTML() {
     return `<div class="panel" style="text-align:center;padding:32px 20px">` +
-      `<div style="font-size:32px;margin-bottom:8px">🏆</div>` +
+      `<div style="color:var(--amber);margin-bottom:8px">${Icon("trophy", { size: 32 })}</div>` +
       `<div style="font-weight:700;margin-bottom:4px">Add friends to build your leaderboard</div>` +
       `<div style="color:var(--muted);font-size:13px;margin-bottom:14px">Link with Micro Buddy coworkers by username. You both have to accept, then your sold $, plans, and CPH line up side by side.</div>` +
       `<button class="btn primary" id="lb-add-btn">Add a coworker</button></div>`;
@@ -698,7 +663,7 @@ const LeaderboardUI = (() => {
     }
     if (!signedIn) {
       container.innerHTML = `<div class="lb-wrap"><div class="panel" style="text-align:center;padding:32px 20px">` +
-        `<div style="font-size:32px;margin-bottom:8px">👤</div>` +
+        `<div style="color:var(--navy-bright);margin-bottom:8px">${Icon("user", { size: 32 })}</div>` +
         `<div style="font-weight:700;margin-bottom:4px">Sign in to compete</div>` +
         `<div style="color:var(--muted);font-size:13px">Leaderboards link Micro Buddy accounts, so sign in first.</div></div></div>`;
       return;
@@ -890,7 +855,7 @@ const LeaderboardUI = (() => {
     const requestedIDs = new Set(snapshot.outgoing.map(r => String(r.target_id)));
     const sentIDs = new Set();
     const bd = sheetShell("Add a coworker",
-      `<div class="lb-search"><span style="color:var(--muted)">🔍</span>` +
+      `<div class="lb-search"><span style="color:var(--muted)">${Icon("search", { size: 14 })}</span>` +
       `<input id="lb-search-input" placeholder="username" autocomplete="off" autocapitalize="off" spellcheck="false"></div>` +
       `<div id="lb-search-err" style="font-size:13px;color:var(--muted);margin-bottom:8px"></div>` +
       `<div id="lb-search-results"></div>`);
