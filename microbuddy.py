@@ -186,14 +186,20 @@ def _supabase_get_user(access_token: str) -> dict:
 
 
 def _supabase_rest(method: str, path: str, access_token: str,
-                   body: dict | None = None, query: str = "") -> dict | None:
-    """PostgREST call with the user's own session (RLS-enforced)."""
+                   body: dict | None = None, query: str = "",
+                   prefer: str = "return=minimal") -> dict | str | None:
+    """PostgREST call with the user's own session (RLS-enforced).
+
+    prefer defaults to return=minimal (no body needed). Pass
+    return=representation when the response body carries the result
+    (e.g. RPC calls that return a value).
+    """
     data = json.dumps(body).encode() if body is not None else None
     headers = {
         "apikey": SUPABASE_ANON_KEY,
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
-        "Prefer": "return=minimal",
+        "Prefer": prefer,
     }
     req = urllib.request.Request(
         f"{SUPABASE_URL}/rest/v1/{path}{query}",
@@ -240,7 +246,8 @@ def _mint_mcp_token(user_id: str, access_token: str) -> str:
     except Exception as e:
         print(f"[pair] warning: couldn't clean old dashboard tokens: {e}", flush=True)
     token = _supabase_rest("POST", "rpc/create_mcp_token", access_token,
-                           body={"p_label": "dashboard"})
+                           body={"p_label": "dashboard"},
+                           prefer="return=representation")
     if not token or not isinstance(token, str):
         raise ValueError("create_mcp_token returned no token")
     return token
