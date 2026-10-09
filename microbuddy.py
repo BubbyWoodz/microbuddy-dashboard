@@ -117,7 +117,8 @@ APP_BUNDLE_ID = _read_secret("APPLE_APP_BUNDLE_ID", ".apple_app_id")
 # reboot. Unlink (/api/pair/revoke) and /logout clear it and re-save, so a
 # wiped login can never be resurrected by a restart.
 SESSIONS: dict[str, dict] = {}
-DASHBOARD_VERSION = "1.1.7"
+DASHBOARD_VERSION = "1.1.8"
+_LAST_MINT_ERROR = None
 SESSIONS_FILE = os.path.join(BASE_DIR, ".sessions.json")
 _rpc_id = 0
 
@@ -985,6 +986,7 @@ class Handler(BaseHTTPRequestHandler):
                 "auth_mode": "pairing",
                 "app_configured": bool(APP_BUNDLE_ID),
                 "version": DASHBOARD_VERSION,
+                "mint_debug": _LAST_MINT_ERROR,
             }).encode())
             return
 
@@ -1304,6 +1306,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 mcp_token = _mint_mcp_token(user_id, access_token)
             except Exception as e:
+                global _LAST_MINT_ERROR
+                import traceback
+                _LAST_MINT_ERROR = traceback.format_exc()[-2000:]
                 self._send(500, json.dumps(
                     {"error": f"couldn't set up data access: {e}"}).encode())
                 return
