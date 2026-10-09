@@ -44,6 +44,8 @@ API (auth required unless noted):
   GET  /api/pair/status?poll_token= -> {claimed, session?}             (public)
                        hands the Supabase session to the browser once claimed
   POST /api/pair/claim    {code, access_token, refresh_token} -> {ok}  (public)
+  POST /api/pair/revoke   {} -> {ok}  (public; unlinks: clears pair codes,
+                       browser sessions, and the widget token)
   GET  /logout
   GET  /api/preferences        {theme, ai_config} (api_key masked)
                                  theme prefers the shared iPhone theme
@@ -1276,6 +1278,28 @@ class Handler(BaseHTTPRequestHandler):
             pairing["sid"] = sid
             self._send(200, json.dumps(
                 {"ok": True, "user_id": user_id}).encode())
+            return
+
+        if path == "/api/pair/revoke":
+            # Public: the iPhone app calls this when the user unlinks a
+            # dashboard. The phone holds no dashboard session of its own, so
+            # unlink revokes everything this dashboard handed out: pending
+            # pair codes, all browser sessions, and the homepage widget token.
+            # Stale per-user MCP token rows in Supabase are cleaned up by the
+            # next claim (_mint_mcp_token deletes the user's old dashboard
+            # tokens before minting a fresh one); the raw tokens themselves
+            # only ever lived in server memory and .widget_token, both of
+            # which are cleared here.
+            PAIRINGS.clear()
+            SESSIONS.clear()
+            try:
+                wt = os.path.join(BASE_DIR, ".widget_token")
+                if os.path.exists(wt):
+                    os.remove(wt)
+            except Exception as e:
+                print(f"[pair] warning: couldn't remove widget token: {e}",
+                      flush=True)
+            self._send(200, json.dumps({"ok": True}).encode())
             return
 
         # Everything below requires a session.
