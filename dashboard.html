@@ -963,7 +963,7 @@ function wireLoginOnce() {
     statusEl.title = "Tap twice to sign out";
     statusEl.addEventListener("dblclick", async () => {
       if (!confirm("Sign out of Micro Buddy on this device?")) return;
-      try { await MBDB.clearCache(); } catch (e) {}
+      try { await MBDB.wipeAll(); } catch (e) {}
       try { await fetch("/logout"); } catch (e) {}
       location.reload();
     });
@@ -1023,8 +1023,38 @@ function pollPairing(pollToken) {
   }, 2000);
 }
 
+// Unlink watcher: the iPhone app's Unlink button calls POST /api/pair/revoke,
+// which kills this browser's server session. Poll for that here — when the
+// server says we're out, wipe every local trace and show the QR gate
+// immediately. A network error is NOT proof of logout: only a definitive
+// {"logged_in": false} triggers the wipe, so a WiFi blip never nukes data.
+let unlinkWatchTimer = null;
+async function watchForUnlink() {
+  const gate = document.getElementById("login-gate");
+  if (gate && !gate.classList.contains("hidden")) return; // already gated
+  try {
+    const r = await fetch("/api/session", { cache: "no-store" });
+    if (!r.ok) return;
+    const d = await r.json().catch(() => null);
+    if (d && d.logged_in === false) {
+      stopUnlinkWatch();
+      try { await MBDB.wipeAll(); } catch (e) {}
+      showLoginGate("This dashboard was unlinked from the iPhone app — scan a new code to link again.");
+    }
+  } catch (e) { /* server unreachable: leave data alone */ }
+}
+function startUnlinkWatch() {
+  stopUnlinkWatch();
+  unlinkWatchTimer = setInterval(watchForUnlink, 15000);
+}
+function stopUnlinkWatch() {
+  if (unlinkWatchTimer) { clearInterval(unlinkWatchTimer); unlinkWatchTimer = null; }
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) watchForUnlink(); });
+
 async function afterLogin() {
   document.getElementById("cache-note").classList.remove("show");
+  startUnlinkWatch();
   // Preferences first: the saved theme applies instantly and is cached
   // for offline. AI config is server-only — never cached on the device.
   try {
