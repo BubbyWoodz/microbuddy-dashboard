@@ -82,7 +82,7 @@ const SettingsUI = (() => {
       '<option value="openai">OpenAI-compatible endpoint</option>' +
       "</select></div>" +
       '<div class="field"><label>Server URL</label>' +
-      '<input type="url" id="ai-url" placeholder="http://umbrel.local:11434" autocomplete="off" spellcheck="false">' +
+      '<input type="url" id="ai-url" placeholder="http://your-server:11434" autocomplete="off" spellcheck="false">' +
       '<div class="hint">Ollama default: http://localhost:11434 if it runs on this same server (the dashboard reaches it, not your browser) — no key needed on your LAN.</div></div>' +
       '<div class="field"><label>Model</label>' +
       '<input type="text" id="ai-model" placeholder="llama3.2" autocomplete="off" spellcheck="false" list="ai-model-list">' +

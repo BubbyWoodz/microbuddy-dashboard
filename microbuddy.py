@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Micro Buddy Dashboard backend — QR/app-pairing auth PWA + offline sync.
 
-Proxies Christian's Micro Buddy MCP server (Supabase edge function) with a
+Proxies the Micro Buddy MCP server (Supabase edge function) with a
 bearer token, and serves the offline-first PWA shell.
 
 Auth: QR pairing with the Micro Buddy iPhone app. The dashboard shows a QR
@@ -26,7 +26,8 @@ The server keeps no theme state of its own (the old shared
 `user_preferences` table code was removed in 2.0.0).
 
 Config (env vars or files in BASE_DIR):
-  MICROBUDDY_TOKEN   bearer token for the MCP server (.token file)
+  MICROBUDDY_TOKEN   legacy, unused: every user's data goes through the
+                     per-pairing token minted for them
   SUPABASE_URL       Supabase project URL (defaults to the shared backend)
   SUPABASE_ANON_KEY  Supabase public anon key, used to verify the phone's
                      session during pairing (.supabase_anon_key file)
@@ -136,7 +137,7 @@ APP_BUNDLE_ID = _read_secret("APPLE_APP_BUNDLE_ID", ".apple_app_id")
 # reboot. Unlink (/api/pair/revoke) and /logout clear it and re-save, so a
 # wiped login can never be resurrected by a restart.
 SESSIONS: dict[str, dict] = {}
-DASHBOARD_VERSION = "2.0.7"
+DASHBOARD_VERSION = "2.0.8"
 # Server state lives on the mounted users volume (/app/users), NOT in the
 # image's /app: an app update replaces the container, and anything outside a
 # volume (the old /app/.sessions.json, /app/.widget_token) vanished with it,
@@ -182,7 +183,7 @@ def _remove_quiet(path: str) -> None:
 
 
 def _migrate_legacy_state() -> None:
-    """One-time move of pre-2.0.7 state files onto the volume."""
+    """One-time move of pre-2.0.8 state files onto the volume."""
     try:
         _ensure_server_dir()
     except OSError as e:
@@ -691,7 +692,7 @@ Allowed action objects (omit "actions" or use [] when nothing should change):
 - {"type":"remove_department_rule","pattern":"ASUS"}
 - {"type":"set_coworkers","date":"YYYY-MM-DD","names":["Alex","Sam"],"crew":[{"name":"Gustavo","start":"2:00 PM","end":"4:00 PM"}]}
 - {"type":"propose_crew","dateKey":"YYYY-MM-DD","crew":[{"name":"Alex","start":"10:00 AM","end":"6:30 PM"}]}
-- {"type":"propose_schedule","schedule":[{"dateKey":"YYYY-MM-DD","start":"2:00 PM","end":"11:00 PM","lunchStart":"6:00 PM","lunchEnd":"7:00 PM","crew":[{"name":"Christian Ambriz","start":"2:00 PM","end":"11:00 PM"}]}]}
+- {"type":"propose_schedule","schedule":[{"dateKey":"YYYY-MM-DD","start":"2:00 PM","end":"11:00 PM","lunchStart":"6:00 PM","lunchEnd":"7:00 PM","crew":[{"name":"Jordan Lee","start":"2:00 PM","end":"11:00 PM"}]}]}
 - {"type":"read_roster","days":[{"dateKey":"YYYY-MM-DD","crew":[{"name":"Alex Rivera","start":"6:30 AM","end":"1:00 PM"}]}]}
 - {"type":"add_note","date":"YYYY-MM-DD","note":"we were short-staffed after 3"}
 - {"type":"add_coworkers","names":["Alex Rivera","Sam Lee"]}
@@ -724,20 +725,46 @@ Confirm in "reply" exactly what you logged, including the commission impact when
 """
 
 
-def build_buddy_system_prompt(token: str | None = None) -> str:
-    """System prompt for the dashboard Buddy, with recent sales context.
+_DEPT_TITLES = {"gsa": "GSA (General Sales Associate)", "systems": "Systems",
+                "byo": "BYO (Build Your Own)", "ce": "CE (Consumer Electronics)",
+                "warehouse": "Warehouse"}
+
+
+def _clean_ctx(v, n: int = 60) -> str:
+    """User-supplied prompt context: one short plain line, no control chars."""
+    v = re.sub(r"[\x00-\x1f\x7f]+", " ", str(v or "")).strip()
+    return v[:n]
+
+
+def build_buddy_system_prompt(token: str | None = None,
+                              user: dict | None = None) -> str:
+    """System prompt for the signed-in user's Buddy, built per user: their
+    name/nickname and department (sent by their own browser from their
+    profile + backup blob) and their sales via their own data token.
 
     Best-effort: if the MCP backend is unreachable the chat still works,
     just without fresh numbers.
     """
+    user = user or {}
+    name = (_clean_ctx(user.get("nickname")) or _clean_ctx(user.get("buddy_name"))
+            or _clean_ctx(user.get("first_name")))
+    full = " ".join(x for x in (_clean_ctx(user.get("first_name")),
+                                _clean_ctx(user.get("last_name"))) if x)
+    dept = _DEPT_TITLES.get(_clean_ctx(user.get("department"), 20).lower(), "")
+    who = f"{name}'s" if name else "the user's"
+    job = f" in the {dept} department" if dept else ""
     lines = [
-        "You are Buddy, Christian's personal sales assistant for his job "
-        "in merchandise sales at Micro Center (Tustin).",
+        f"You are Buddy, {who} personal sales assistant for their job{job} "
+        "at Micro Center.",
+    ]
+    if name:
+        lines.append(f"Call them {name}." + (f" Their full name is {full}." if full and full != name else ""))
+    lines += [
         "Talk like a homie: casual, direct, no fluff. Keep answers short "
-        "unless he asks for detail.",
-        "When he asks about money, give the full breakdown: commission + "
+        "unless they ask for detail.",
+        "When they ask about money, give the full breakdown: commission + "
         "base pay, total, and take-home — not just one number.",
-        "You know his sales data (below). Use it when he asks about his numbers.",
+        "You know their sales data (below). Use it when they ask about their numbers.",
     ]
     lines.append(ACTION_SCHEMA)
     if not token:
@@ -1035,6 +1062,7 @@ class Handler(BaseHTTPRequestHandler):
                     "cph": f"{float(stats.get('cph', 0)):.2f}",
                     "products": str(int(stats.get("items_total", 0))),
                     "period": f"{start.strftime('%b %-d')}–{end.strftime('%b %-d')}",
+                    "scope": "Most recently active dashboard user",
                 }).encode())
             except Exception as e:
                 print(f"[widget] failed: {e}", flush=True)
@@ -1587,6 +1615,9 @@ class Handler(BaseHTTPRequestHandler):
                                query=f"?id=eq.{row['id']}&user_id=eq.{uid}")
             except Exception as e:
                 print(f"[heartbeat] last_used_at update failed: {e}", flush=True)
+            # The homepage widget follows the most recently active user.
+            if sess.get("mcp_token"):
+                self._own_widget(uid, sess["mcp_token"])
             self._send(200, json.dumps({"ok": True, "checked": True, "linked": True}).encode())
             return
 
@@ -1677,7 +1708,8 @@ class Handler(BaseHTTPRequestHandler):
             history = [{"role": m["role"], "content": m["content"]}
                        for m in session["messages"][-40:]]
             try:
-                system_prompt = build_buddy_system_prompt(sess.get("mcp_token"))
+                uctx = body.get("user_context") if isinstance(body.get("user_context"), dict) else {}
+                system_prompt = build_buddy_system_prompt(sess.get("mcp_token"), uctx)
                 reply = proxy_ai_chat(ai_config, history, system_prompt)
             except ValueError as e:
                 self._send(400, json.dumps({"error": str(e)}).encode())
@@ -1709,8 +1741,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    if not TOKEN:
-        print("WARNING: no bearer token configured (MICROBUDDY_TOKEN env or .token file)")
     if not APP_BUNDLE_ID:
         print("WARNING: no iOS app bundle ID configured (APPLE_APP_BUNDLE_ID env"
               " or .apple_app_id file) — app pairing claims will be rejected")

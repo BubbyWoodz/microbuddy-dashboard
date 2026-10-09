@@ -9,12 +9,15 @@ first sync.
 
 ```bash
 docker run -d -p 5002:5002 \
-  -e MICROBUDDY_TOKEN="<your-mcp-token>" \
-  -e SUPABASE_ANON_KEY="<your-supabase-anon-key>" \
+  -e SUPABASE_ANON_KEY="<micro-buddy-supabase-anon-key>" \
+  -v "$PWD/users:/app/users" \
   ghcr.io/bubbywoodz/microbuddy-dashboard:latest
 ```
 
-Then open http://localhost:5002.
+Then open http://localhost:5002 and scan the QR code with the Micro Buddy
+iPhone app. Any Micro Buddy user can pair; each person sees only their own
+data, names, pay settings and goals (nothing is tied to one account). Logins
+and per-user settings live in the mounted `users/` folder.
 
 ## On Umbrel
 
