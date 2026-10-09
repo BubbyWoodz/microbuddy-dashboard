@@ -977,9 +977,9 @@ button.crew-row { color: var(--text-primary); font: inherit; text-align: left; w
 .month-head:first-child { margin-top: 4px; }
 .month-head .canvas-title { margin: 0; }
 .month-head .mh-sub { font-size: 13px; color: var(--text-on-canvas-2); }
-.day-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.day-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; align-items: stretch; }
 .day-card {
-  display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; cursor: pointer;
+  display: flex; align-items: center; gap: 14px; width: 100%; height: 100%; text-align: left; cursor: pointer;
   padding: 12px 14px; min-height: 76px;
   background: var(--panel-bg); border: var(--panel-border); border-radius: var(--radius-md, 14px);
   box-shadow: var(--panel-shadow); color: var(--text-primary);
@@ -990,18 +990,21 @@ button.crew-row { color: var(--text-primary); font: inherit; text-align: left; w
 .day-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .day-card .date-badge { flex: none; width: 40px; }
 .day-card .date-badge .d { font-size: 24px; }
+/* Tile text never truncates: no ellipsis, no overflow clipping. */
 .day-card .dc-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.day-card .dc-top { display: flex; align-items: baseline; gap: 8px; }
-.day-card .dc-dow { flex: 1; min-width: 0; font-weight: 800; font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.day-card .dc-com { font-family: var(--font-num); font-weight: 800; font-size: 16px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.day-card .dc-top { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; row-gap: 0; }
+.day-card .dc-dow { flex: 1 0 auto; font-weight: 800; font-size: 14.5px; white-space: nowrap; }
+.day-card .dc-com { margin-left: auto; font-family: var(--font-num); font-weight: 800; font-size: 16px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .day-card .dc-com.money { color: var(--money-text, var(--money)); }
 .day-card .dc-com.red { color: var(--red); }
-.day-card .dc-meta { font-size: 12px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.day-card .dc-ret { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: var(--red); }
+.day-card .dc-meta { font-size: 12px; line-height: 1.4; color: var(--text-secondary); white-space: normal; overflow-wrap: normal; word-break: normal; }
+.day-card .dc-meta .dc-seg { white-space: nowrap; }
+.day-card .dc-ret { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; color: var(--red); white-space: nowrap; }
+.day-card .dc-ret .ico { flex: none; }
 [data-theme="terminal"] .day-card { border-radius: 0; box-shadow: none; }
 [data-theme="terminal"] .day-card:hover { box-shadow: inset 0 0 0 1px var(--accent); transform: none; }
 [data-theme="win95"] .day-card { border-radius: 0; border: 0; box-shadow: var(--bevel-out); }
 [data-theme="win95"] .day-card:hover { transform: none; box-shadow: var(--bevel-out), inset 0 0 0 1px var(--accent); }
 [data-theme="win95"] .day-card:active { box-shadow: var(--bevel-in); }
-[data-theme="terminal"] .day-card .dc-meta { white-space: normal; font-size: 11px; line-height: 1.35; }
+[data-theme="terminal"] .day-card .dc-meta { font-size: 11.5px; line-height: 1.4; }
 .modal-card.wide.xwide { max-width: 1120px; }
