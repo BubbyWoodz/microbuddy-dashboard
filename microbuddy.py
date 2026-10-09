@@ -135,7 +135,7 @@ APP_BUNDLE_ID = _read_secret("APPLE_APP_BUNDLE_ID", ".apple_app_id")
 # reboot. Unlink (/api/pair/revoke) and /logout clear it and re-save, so a
 # wiped login can never be resurrected by a restart.
 SESSIONS: dict[str, dict] = {}
-DASHBOARD_VERSION = "2.0.5"
+DASHBOARD_VERSION = "2.0.6"
 SESSIONS_FILE = os.path.join(BASE_DIR, ".sessions.json")
 _rpc_id = 0
 
@@ -487,6 +487,11 @@ def verify_apple_id_token(id_token: str, expected_aud: str) -> dict:
 # ================= MCP proxy =================
 
 def mcp_call(tool: str, args: dict, token: str | None = None) -> dict:
+    """Call one MCP tool with the CALLER's token. There is deliberately no
+    fallback to a server-wide token: that would show one user's sales to
+    every other user of this dashboard."""
+    if not token:
+        raise RuntimeError("no data token for this session; pair again")
     global _rpc_id
     _rpc_id += 1
     payload = {
@@ -502,7 +507,7 @@ def mcp_call(tool: str, args: dict, token: str | None = None) -> dict:
         headers={
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
-            "Authorization": f"Bearer {token or TOKEN}",
+            "Authorization": f"Bearer {token}",
             "User-Agent": "microbuddy-dashboard/1.0",
         },
         method="POST",
@@ -594,7 +599,7 @@ Confirm in "reply" exactly what you logged, including the commission impact when
 """
 
 
-def build_buddy_system_prompt() -> str:
+def build_buddy_system_prompt(token: str | None = None) -> str:
     """System prompt for the dashboard Buddy, with recent sales context.
 
     Best-effort: if the MCP backend is unreachable the chat still works,
@@ -610,13 +615,13 @@ def build_buddy_system_prompt() -> str:
         "You know his sales data (below). Use it when he asks about his numbers.",
     ]
     lines.append(ACTION_SCHEMA)
-    if not TOKEN:
+    if not token:
         return "\n".join(lines)
     try:
         today = datetime.now().strftime("%Y-%m-%d")
         week_ago = (datetime.now() - timedelta(days=6)).strftime("%Y-%m-%d")
-        summary = mcp_call("get_day_summary", {"date": today})
-        stats = mcp_call("get_stats", {"start": week_ago, "end": today})
+        summary = mcp_call("get_day_summary", {"date": today}, token=token)
+        stats = mcp_call("get_stats", {"start": week_ago, "end": today}, token=token)
         ctx = [f"Today is {today}. Recent sales context:"]
         if isinstance(summary, dict) and not summary.get("error"):
             ctx.append(
@@ -862,7 +867,7 @@ class Handler(BaseHTTPRequestHandler):
             # Homepage widget: current pay-period stats for the paired user.
             # Dashes until someone pairs (no token = no data, not an error).
             try:
-                with open("/app/.widget_token") as f:
+                with open(os.path.join(BASE_DIR, ".widget_token")) as f:
                     wtoken = f.read().strip()
             except OSError:
                 wtoken = ""
@@ -888,8 +893,9 @@ class Handler(BaseHTTPRequestHandler):
                     "period": f"{start.strftime('%b %-d')}–{end.strftime('%b %-d')}",
                 }).encode())
             except Exception as e:
+                print(f"[widget] failed: {e}", flush=True)
                 self._send(502, json.dumps(
-                    {"error": str(e)[:200]}).encode())
+                    {"error": "stats unavailable"}).encode())
             return
 
         if path == "/widget-icon":
@@ -919,11 +925,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/health":
+            # Public: liveness + version only. No config, tokens or traces.
             self._send(200, json.dumps({
                 "ok": True,
-                "token_configured": bool(TOKEN),
-                "auth_mode": "pairing",
-                "app_configured": bool(APP_BUNDLE_ID),
                 "version": DASHBOARD_VERSION,
             }).encode())
             return
@@ -1079,8 +1083,9 @@ class Handler(BaseHTTPRequestHandler):
             # Per-session MCP token (minted at pairing) so each user sees
             # their own data; falls back to the global token.
             sess_token = sess.get("mcp_token") if sess else None
-            if not (sess_token or TOKEN):
-                self._send(500, json.dumps({"error": "no token configured"}).encode())
+            if not sess_token:
+                self._send(401, json.dumps(
+                    {"error": "this session has no data access; pair again"}).encode())
                 return
             tool, arg_map = ROUTES[path]
             args: dict = {}
@@ -1097,7 +1102,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = mcp_call(tool, args, token=sess_token)
                 self._send(200, json.dumps(result).encode())
             except Exception as e:
-                self._send(502, json.dumps({"error": str(e)[:500]}).encode())
+                print(f"[api] {path} failed: {e}", flush=True)
+                self._send(502, json.dumps({"error": "data request failed"}).encode())
             return
 
         self._send(404, b"not found", "text/plain")
@@ -1144,6 +1150,9 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/theme-icon":
+            if not self._get_session():
+                self._send(401, json.dumps({"error": "login required"}).encode())
+                return
             # Swap the Umbrel tile icon to match the user's dashboard theme.
             # /app/tile-icon.png is bind-mounted to the app's icon.png in
             # the Umbrel app-data dir (see docker-compose.yml).
@@ -1165,7 +1174,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps({"ok": True, "theme": theme,
                                             "icon": icon_file}).encode())
             except Exception as e:
-                self._send(500, json.dumps({"error": str(e)}).encode())
+                print(f"[theme-icon] failed: {e}", flush=True)
+                self._send(500, json.dumps({"error": "couldn't swap icon"}).encode())
             return
 
         if path == "/api/pair/start":
@@ -1214,8 +1224,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 user = _supabase_get_user(access_token)
             except Exception as e:
+                print(f"[pair] claim rejected: {e}", flush=True)
                 self._send(401, json.dumps(
-                    {"error": f"session invalid: {e}"}).encode())
+                    {"error": "session invalid"}).encode())
                 return
             user_id = str(user.get("id", ""))
             if not user_id:
@@ -1234,8 +1245,12 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 mcp_token = _mint_mcp_token(user_id, access_token)
             except Exception as e:
+                # Never leave the phone's Supabase tokens parked on a pairing
+                # that didn't complete.
+                pairing.pop("session", None)
+                print(f"[pair] mint failed: {e}", flush=True)
                 self._send(500, json.dumps(
-                    {"error": f"couldn't set up data access: {e}"}).encode())
+                    {"error": "couldn't set up data access; try again"}).encode())
                 return
             # Homepage widget token: whoever pairs with this dashboard owns
             # the widget — each server shows its own user's stats.
@@ -1244,6 +1259,9 @@ class Handler(BaseHTTPRequestHandler):
                 with open(_wt, "w") as f:
                     f.write(mcp_token)
                 os.chmod(_wt, 0o600)
+                with open(_wt + "_owner", "w") as f:
+                    f.write(user_id)
+                os.chmod(_wt + "_owner", 0o600)
             except Exception as e:
                 print(f"[pair] warning: couldn't write widget token: {e}",
                       flush=True)
@@ -1262,56 +1280,68 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/pair/revoke":
-            # Authenticated: the iPhone app calls this when the user unlinks
-            # a dashboard, sending its Supabase access_token. We verify the
-            # token and revoke ONLY that user's sessions (not everyone's).
-            # This prevents anyone on the network from logging out the
-            # dashboard.
+            # Authenticated, and scoped to the caller only. Two ways in:
+            #  - the iPhone app (unlink) sends its Supabase access_token;
+            #  - a signed-in dashboard sends its own session cookie.
+            # Either way ONLY that user's sessions, pending pairings and
+            # dashboard token are removed. No auth -> 401, nothing touched.
             body = self._read_json_body()
             rtoken = str(body.get("access_token", "")).strip()
-            if not rtoken:
-                self._send(401, json.dumps(
-                    {"error": "access_token required"}).encode())
-                return
-            try:
-                ruser = _supabase_get_user(rtoken)
-            except Exception:
-                self._send(401, json.dumps(
-                    {"error": "invalid session"}).encode())
-                return
-            ruser_id = str(ruser.get("id", ""))
+            cookie_sess = self._get_session()
+            ruser_id = ""
+            if rtoken:
+                try:
+                    ruser_id = str(_supabase_get_user(rtoken).get("id", ""))
+                except Exception:
+                    ruser_id = ""
+                if not ruser_id:
+                    self._send(401, json.dumps({"error": "invalid session"}).encode())
+                    return
+                if cookie_sess and cookie_sess.get("sub") != ruser_id:
+                    self._send(403, json.dumps({"error": "session mismatch"}).encode())
+                    return
+            elif cookie_sess:
+                ruser_id = str(cookie_sess.get("sub", ""))
             if not ruser_id:
-                self._send(401, json.dumps(
-                    {"error": "invalid session"}).encode())
+                self._send(401, json.dumps({"error": "login required"}).encode())
                 return
-            # Revoke only this user's sessions.
             revoked = 0
             for sid in list(SESSIONS.keys()):
                 if SESSIONS[sid].get("sub") == ruser_id:
                     del SESSIONS[sid]
                     revoked += 1
             _save_sessions()
-            # Clear pending pair codes (they're short-lived anyway).
-            PAIRINGS.clear()
-            # Clear the widget token if this user owned it. The widget shows
-            # whoever paired last; unlinking removes it.
+            # Only this user's pending pairings (claimed, not yet picked up).
+            for code in [c for c, p in PAIRINGS.items()
+                         if (p.get("session") or {}).get("user_id") == ruser_id]:
+                PAIRINGS.pop(code, None)
+            # Widget token: only if this user owns it.
             try:
                 wt = os.path.join(BASE_DIR, ".widget_token")
-                if os.path.exists(wt):
-                    os.remove(wt)
+                owner = ""
+                if os.path.exists(wt + "_owner"):
+                    with open(wt + "_owner") as f:
+                        owner = f.read().strip()
+                if owner == ruser_id:
+                    for fp in (wt, wt + "_owner"):
+                        if os.path.exists(fp):
+                            os.remove(fp)
             except Exception as e:
                 print(f"[pair] warning: couldn't remove widget token: {e}",
                       flush=True)
-            # Also delete this user's dashboard MCP token from Supabase so
-            # it can't be reused.
-            try:
-                _supabase_rest("DELETE", "mcp_tokens", rtoken,
-                               query=f"?user_id=eq.{ruser_id}&label=eq.dashboard")
-            except Exception as e:
-                print(f"[pair] warning: couldn't delete dashboard token: {e}",
-                      flush=True)
+            # Delete this user's dashboard MCP token (needs their own token).
+            if rtoken:
+                try:
+                    _supabase_rest("DELETE", "mcp_tokens", rtoken,
+                                   query=f"?user_id=eq.{ruser_id}&label=eq.dashboard")
+                except Exception as e:
+                    print(f"[pair] warning: couldn't delete dashboard token: {e}",
+                          flush=True)
+            extra = None
+            if cookie_sess:
+                extra = {"Set-Cookie": "mb_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"}
             self._send(200, json.dumps({"ok": True,
-                                        "revoked_sessions": revoked}).encode())
+                                        "revoked_sessions": revoked}).encode(), extra=extra)
             return
 
         # Everything below requires a session.
@@ -1408,7 +1438,7 @@ class Handler(BaseHTTPRequestHandler):
             history = [{"role": m["role"], "content": m["content"]}
                        for m in session["messages"][-40:]]
             try:
-                system_prompt = build_buddy_system_prompt()
+                system_prompt = build_buddy_system_prompt(sess.get("mcp_token"))
                 reply = proxy_ai_chat(ai_config, history, system_prompt)
             except ValueError as e:
                 self._send(400, json.dumps({"error": str(e)}).encode())
