@@ -12,8 +12,8 @@
 <meta name="apple-mobile-web-app-title" content="Micro Buddy">
 <link rel="apple-touch-icon" href="/icons/icon-180.png">
 <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/themes.css?v=2.0.6">
-<link rel="stylesheet" href="/components.css?v=2.0.6">
+<link rel="stylesheet" href="/themes.css?v=2.0.7">
+<link rel="stylesheet" href="/components.css?v=2.0.7">
 <script>
 /* Apply the last theme before first paint (no flash of the default). */
 (function () {
@@ -151,30 +151,30 @@ window.toast = toast;
   </div>
 </div>
 
-<script src="/icons.js?v=2.0.6"></script>
-<script src="/db.js?v=2.0.6"></script>
-<script src="/sb.js?v=2.0.6"></script>
-<script src="/sync.js?v=2.0.6"></script>
-<script src="/payengine.js?v=2.0.6"></script>
-<script src="/daydetail.js?v=2.0.6"></script>
-<script src="/stats.js?v=2.0.6"></script>
-<script src="/badges.js?v=2.0.6"></script>
-<script src="/sales.js?v=2.0.6"></script>
-<script src="/sale-entry.js?v=2.0.6"></script>
-<script src="/schedule.js?v=2.0.6"></script>
-<script src="/journal.js?v=2.0.6"></script>
-<script src="/coworkers.js?v=2.0.6"></script>
-<script src="/goals.js?v=2.0.6"></script>
-<script src="/microcharm.js?v=2.0.6"></script>
-<script src="/profile.js?v=2.0.6"></script>
-<script src="/leaderboard.js?v=2.0.6"></script>
-<script src="/brands.js?v=2.0.6"></script>
-<script src="/home-widgets.js?v=2.0.6"></script>
+<script src="/icons.js?v=2.0.7"></script>
+<script src="/db.js?v=2.0.7"></script>
+<script src="/sb.js?v=2.0.7"></script>
+<script src="/sync.js?v=2.0.7"></script>
+<script src="/payengine.js?v=2.0.7"></script>
+<script src="/daydetail.js?v=2.0.7"></script>
+<script src="/stats.js?v=2.0.7"></script>
+<script src="/badges.js?v=2.0.7"></script>
+<script src="/sales.js?v=2.0.7"></script>
+<script src="/sale-entry.js?v=2.0.7"></script>
+<script src="/schedule.js?v=2.0.7"></script>
+<script src="/journal.js?v=2.0.7"></script>
+<script src="/coworkers.js?v=2.0.7"></script>
+<script src="/goals.js?v=2.0.7"></script>
+<script src="/microcharm.js?v=2.0.7"></script>
+<script src="/profile.js?v=2.0.7"></script>
+<script src="/leaderboard.js?v=2.0.7"></script>
+<script src="/brands.js?v=2.0.7"></script>
+<script src="/home-widgets.js?v=2.0.7"></script>
 <script src="/qrcode.min.js"></script>
-<script src="/settings.js?v=2.0.6"></script>
-<script src="/screen-lock.js?v=2.0.6"></script>
-<script src="/buddy-actions.js?v=2.0.6"></script>
-<script src="/buddy.js?v=2.0.6"></script>
+<script src="/settings.js?v=2.0.7"></script>
+<script src="/screen-lock.js?v=2.0.7"></script>
+<script src="/buddy-actions.js?v=2.0.7"></script>
+<script src="/buddy.js?v=2.0.7"></script>
 
 <script>
 "use strict";
@@ -416,8 +416,62 @@ async function checkSession() {
     const r = await fetch("/api/session", { cache: "no-store" });
     if (!r.ok) return true; // server hiccup: show cached data
     const d = await r.json().catch(() => null);
-    return !(d && d.logged_in === false);
+    if (!(d && d.logged_in === false)) return true;
+    const v = await tryResume();
+    if (v === "unlinked") { await wipeLocal(); return false; }
+    return v === "ok" || v === "retry" ? hasLocalLogin() : false;
   } catch (e) { return true; } // offline: let cached data render
+}
+function hasLocalLogin() {
+  try { return !!localStorage.getItem("mb_supabase_session"); } catch (e) { return false; }
+}
+async function wipeLocal() {
+  try { await MBDB.wipeAll(); } catch (e) {}
+  try { localStorage.removeItem("mb_supabase_session"); localStorage.removeItem("mb_dashboard_link"); } catch (e) {}
+}
+/// The server lost this browser's session (expired cookie, reset server
+/// state) but the browser still has the phone's Supabase login. Ask the
+/// server to re-issue a session if this dashboard's link row still exists.
+/// "ok" | "unlinked" (row gone / nothing to resume) | "retry" (can't tell now)
+async function tryResume() {
+  let link = null;
+  try { link = localStorage.getItem("mb_dashboard_link"); } catch (e) {}
+  if (!link || !hasLocalLogin()) return "unlinked";
+  let session = null;
+  try { session = await SB.getValidSession(); } catch (e) { if (e && e.isAuth) return "unlinked"; return "retry"; }
+  if (!session || !session.access_token) return "unlinked";
+  try {
+    const r = await fetch("/api/session/resume", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ access_token: session.access_token, link_id: link }) });
+    if (r.status === 401) return "unlinked";
+    if (!r.ok) return "retry";
+    const d = await r.json().catch(() => ({}));
+    if (d.link_id) localStorage.setItem("mb_dashboard_link", d.link_id);
+    return "ok";
+  } catch (e) { return "retry"; }
+}
+/// Every few minutes: confirm this dashboard's link row still exists (the
+/// phone may have unlinked it) and stamp its last-seen time.
+let lastBeat = 0;
+async function heartbeat() {
+  if (Date.now() - lastBeat < 5 * 60 * 1000) return;
+  lastBeat = Date.now();
+  let session = null;
+  try { session = await SB.getValidSession(); } catch (e) { return; }
+  if (!session || !session.access_token) return;
+  try {
+    const r = await fetch("/api/session/heartbeat", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ access_token: session.access_token }) });
+    if (r.status === 401) {
+      const d = await r.json().catch(() => ({}));
+      if (d && d.linked === false) await handleUnlinked();
+    }
+  } catch (e) { /* offline */ }
+}
+async function handleUnlinked() {
+  stopUnlinkWatch();
+  await wipeLocal();
+  showLoginGate("This dashboard was unlinked from the iPhone app — scan a new code to link again.");
 }
 function showLoginGate(msg) {
   $("login-gate").classList.remove("hidden");
@@ -466,6 +520,7 @@ function pollPairing(pollToken) {
         // The phone handed over its Supabase session: this browser becomes
         // a full client (and works offline).
         try { if (d.session && d.session.access_token) SB.setSession(d.session); } catch (e) {}
+        try { if (d.session && d.session.link_id) localStorage.setItem("mb_dashboard_link", d.session.link_id); } catch (e) {}
         try { SB.clearProfileCache(); } catch (e) {}
         hideLoginGate();
         await afterLogin();
@@ -487,11 +542,12 @@ async function watchForUnlink() {
     if (!r.ok) return;
     const d = await r.json().catch(() => null);
     if (d && d.logged_in === false) {
-      stopUnlinkWatch();
-      try { await MBDB.wipeAll(); } catch (e) {}
-      try { localStorage.removeItem("mb_supabase_session"); } catch (e) {}
-      showLoginGate("This dashboard was unlinked from the iPhone app — scan a new code to link again.");
+      // Lost the server session: resume if the link row still exists.
+      const v = await tryResume();
+      if (v === "unlinked") await handleUnlinked();
+      return;
     }
+    heartbeat();
   } catch (e) { /* server unreachable: leave data alone */ }
 }
 function startUnlinkWatch() { stopUnlinkWatch(); unlinkTimer = setInterval(watchForUnlink, 15000); }

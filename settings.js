@@ -210,9 +210,16 @@ const SettingsUI = (() => {
     });
     box.querySelector("#signout-btn").addEventListener("click", async () => {
       if (!confirm("Sign out of Micro Buddy on this device?")) return;
+      // Server drops this browser's session AND deletes its dashboard link
+      // row, so the phone's "Linked dashboards" list updates.
+      let token = "";
+      try { const ss = await SB.getValidSession(); token = (ss && ss.access_token) || ""; } catch (e) {}
+      try {
+        await fetch("/api/session/logout", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ access_token: token }) });
+      } catch (e) {}
       try { await MBDB.wipeAll(); } catch (e) {}
-      try { localStorage.removeItem("mb_supabase_session"); } catch (e) {}
-      try { await fetch("/logout"); } catch (e) {}
+      try { localStorage.removeItem("mb_supabase_session"); localStorage.removeItem("mb_dashboard_link"); } catch (e) {}
       location.reload();
     });
   }
