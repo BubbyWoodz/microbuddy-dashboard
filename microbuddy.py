@@ -947,6 +947,14 @@ class Handler(BaseHTTPRequestHandler):
             }).encode())
             return
 
+        if path == "/api/session":
+            # Public: lets the frontend notice the phone unlinked this
+            # dashboard (POST /api/pair/revoke cleared SESSIONS) so it can
+            # wipe local data and show the QR gate immediately.
+            self._send(200, json.dumps(
+                {"logged_in": self._get_session() is not None}).encode())
+            return
+
         if path == "/api/config":
             self._send(200, json.dumps({
                 "authMode": "pairing",
