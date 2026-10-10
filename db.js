@@ -89,6 +89,10 @@ const MBDB = (() => {
     for (const store of ["apiCache", "kv", "chat", "writeQueue"]) {
       try { await run(store, "readwrite", os => os.clear()); } catch (e) {}
     }
+    // Drop the whole database too (other tabs' handles are closed by versionchange).
+    try { if (dbp) { const d = await dbp; d.close(); } } catch (e) {}
+    dbp = null;
+    try { await new Promise(res => { const r = indexedDB.deleteDatabase(DB_NAME); r.onsuccess = r.onerror = r.onblocked = () => res(); }); } catch (e) {}
     try { localStorage.clear(); } catch (e) {}
     try { sessionStorage.clear(); } catch (e) {}
     // Cached app files and the service worker too: no trace left.
