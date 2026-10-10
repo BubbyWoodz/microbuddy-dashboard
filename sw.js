@@ -10,7 +10,7 @@
  */
 "use strict";
 
-const VERSION = "2.0.13";
+const VERSION = "2.0.14";
 const SHELL_CACHE = "mb-shell-" + VERSION;
 
 const SHELL_ASSETS = [

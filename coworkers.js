@@ -214,6 +214,17 @@ const CoworkersUI = (() => {
     return new Blob([bytes], { type: mime });
   }
 
+  /// 10/12-bit HEIC: "heix"/"hevx" brand, or an hvcC luma bit depth > 8.
+  function heicIs10Bit(b64) {
+    try {
+      const head = atob(b64.replace(/^data:[^,]*,/, "").slice(0, 8000).replace(/[^A-Za-z0-9+/]/g, "").slice(0, 5984));
+      if (/^(heix|hevx)$/.test(head.slice(8, 12))) return true;
+      const i = head.indexOf("hvcC");
+      if (i > 0) return ((head.charCodeAt(i + 4 + 21) & 7) + 8) > 8;
+    } catch (e) {}
+    return false;
+  }
+
   function loadHeicLib() {
     if (window.heic2any) return Promise.resolve(window.heic2any);
     if (heicLib) return heicLib;
@@ -246,9 +257,19 @@ const CoworkersUI = (() => {
     });
   }
 
-  async function heicToJpegBlob(blob) {
-    // Safari can draw HEIC itself; everyone else goes through heic2any.
+  async function heicToJpegBlob(blob, b64) {
+    // 1. This dashboard's server (pillow-heif): handles 10-bit HDR "heix"
+    //    photos from Apple Contacts, which heic2any decodes as color noise.
+    try {
+      const r = await fetch("/api/photo/jpeg", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: b64 }) });
+      if (r.ok) { const j = await r.json(); if (j && j.jpeg) return b64ToBlob(j.jpeg, "image/jpeg"); }
+    } catch (e) { /* offline: fall through */ }
+    // 2. Safari can draw HEIC itself.
     try { return await downscale(blob, 512, 0.8); } catch (e) { /* fall through */ }
+    // 3. heic2any only for 8-bit files; a 10-bit one would come out garbled,
+    //    so initials are better than noise.
+    if (heicIs10Bit(b64)) throw new Error("10-bit HEIC needs the server");
     const lib = await loadHeicLib();
     let out = await lib({ blob, toType: "image/jpeg", quality: 0.8 });
     if (Array.isArray(out)) out = out[0];
@@ -275,13 +296,13 @@ const CoworkersUI = (() => {
   function ensureConverted(c, d, key) {
     if (pending.has(key)) return pending.get(key);
     const p = (async () => {
-      const kvKey = "cw-heic:" + key;
+      const kvKey = "cw-heic2:" + key; // v2: old entries may hold garbled heic2any output
       let jpeg = null;
       try { jpeg = await MBDB.kvGet(kvKey); } catch (e) { /* no cache */ }
       let blob;
       if (jpeg && typeof jpeg === "string") blob = b64ToBlob(jpeg, "image/jpeg");
       else {
-        blob = await heicToJpegBlob(b64ToBlob(d, "image/heic"));
+        blob = await heicToJpegBlob(b64ToBlob(d, "image/heic"), d);
         try {
           const b64 = await new Promise(res => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.readAsDataURL(blob); });
           await MBDB.kvSet(kvKey, b64);
