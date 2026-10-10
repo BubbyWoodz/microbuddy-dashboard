@@ -105,6 +105,26 @@ const SB = (() => {
     return refreshing.finally(() => { refreshing = null; });
   }
 
+  /// Call one MCP tool as the signed-in user (ScheduleMirrorService.call).
+  /// Returns {ok:true, payload} | {ok:false, reason:"unconfigured"|"transport"}.
+  async function mcpTool(name, args) {
+    let session;
+    try { session = await getValidSession(); } catch (e) { return { ok: false, reason: "unconfigured" }; }
+    let res;
+    try {
+      res = await fetch(SUPABASE_URL + "/functions/v1/mcp-server", { method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + session.access_token, "apikey": ANON_KEY, "mcp-protocol-version": "2025-03-26" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }) });
+    } catch (e) { return { ok: false, reason: "transport" }; }
+    if (res.status === 401 || res.status === 404) return { ok: false, reason: "unconfigured" };
+    if (!res.ok) return { ok: false, reason: "transport" };
+    let text = null;
+    try { const j = await res.json(); text = j && j.result && j.result.content && j.result.content[0] && j.result.content[0].text; } catch (e) {}
+    if (!text) return { ok: false, reason: "transport" };
+    if (/unknown tool/i.test(text)) return { ok: false, reason: "unconfigured" };
+    try { return { ok: true, payload: JSON.parse(text) }; } catch (e) { return { ok: false, reason: "transport" }; }
+  }
+
   async function getValidSession() {
     await config();
     let session = getSession();
@@ -318,7 +338,7 @@ const SB = (() => {
   function clearProfileCache() { profileMem = null; }
 
   return {
-    getSession, setSession, getValidSession, rest, getBackup, saveBackup,
+    getSession, setSession, getValidSession, rest, mcpTool, getBackup, saveBackup,
     getProfile, cachedProfile, updateProfile, onProfile, photoURL, clearProfileCache,
     isoSeconds, get SUPABASE_URL() { return SUPABASE_URL; },
   };
@@ -386,7 +406,8 @@ const AppDataSanitizer = (() => {
   function shiftHoursOn(data, key, tz) {
     let h = 0;
     for (const s of (data.shifts || [])) {
-      const start = Date.parse(s.start), end = Date.parse(s.end);
+      if (!s || s.isRemoved) continue; // removal tombstone
+      const start = Date.parse(s.actualStart || s.start), end = Date.parse(s.actualEnd || s.end);
       if (isNaN(start) || isNaN(end)) continue;
       const k = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" })
         .format(new Date(start));
@@ -404,14 +425,27 @@ const AppDataSanitizer = (() => {
       for (const day of data.days) {
         if (!day || typeof day !== "object") continue;
         day.id = String(day.id || "");
+        // A day first created on the dashboard has no date yet: born stamped
+        // like iOS WorkDay.init so the phone's one-shot migrations skip it.
+        const bornHere = !validISO(day.date) && day.secondMealRuleVersion == null;
         if (!validISO(day.date)) day.date = zonedISO(day.id, tz, 0, 0);
+        if (bornHere) {
+          day.secondMealRuleVersion = 1;
+          if (day.brandAliasVersion == null) day.brandAliasVersion = 1;
+        }
+        ["ekeyNumber", "walkieNumber"].forEach(k => {
+          if (day[k] == null) { delete day[k]; return; }
+          const v = String(day[k]).trim();
+          if (v) day[k] = v; else delete day[k];
+        });
         if (!Array.isArray(day.tickets)) day.tickets = [];
         if (typeof day.scheduledHours !== "number" || isNaN(day.scheduledHours)) {
           day.scheduledHours = shiftHoursOn(data, day.id, tz);
         }
         if (typeof day.lunchMinutes !== "number" || isNaN(day.lunchMinutes)) {
+          const pd = data.profile && typeof data.profile.defaultLunchMinutes === "number" ? data.profile.defaultLunchMinutes : 30;
           const h = day.scheduledHours;
-          day.lunchMinutes = h < 5 ? 0 : (h >= 11 ? 90 : 60);
+          day.lunchMinutes = h < 5 ? 0 : (h >= 11 ? 90 : Math.max(0, Math.round(pd)));
         }
         day.lunchMinutes = Math.round(day.lunchMinutes);
         if (typeof day.note !== "string") day.note = day.note == null ? "" : String(day.note);
@@ -447,6 +481,9 @@ const AppDataSanitizer = (() => {
         s.id = String(s.id || uuid());
         s.title = typeof s.title === "string" ? s.title : (s.title == null ? "Shift" : String(s.title));
         s.location = typeof s.location === "string" ? s.location : (s.location == null ? "" : String(s.location));
+        ["actualStart", "actualEnd"].forEach(k => { if (s[k] != null && !validISO(s[k])) delete s[k]; if (s[k] === null) delete s[k]; });
+        if (s.isRemoved != null) s.isRemoved = !!s.isRemoved;
+        if (s.ukgIdentifier === null || s.isManual) delete s.ukgIdentifier;
         if (s.coworkers != null) {
           s.coworkers = (Array.isArray(s.coworkers) ? s.coworkers : [])
             .map(c => typeof c === "string" ? { name: c } : c)

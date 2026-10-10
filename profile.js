@@ -166,12 +166,37 @@ const ProfileUI = (() => {
             US_STATES.map(s => '<option value="' + s[0] + '"' + (state === s[0] ? " selected" : "") + ">" + esc(s[1]) + "</option>").join("") +
           "</select></div>" +
         "</div>" +
+        storeFieldHTML() +
         '<div class="btn-row" style="margin-top:14px"><button class="btn primary" id="pf-save">' + I("check") + " Save</button>" +
         '<span class="form-status" id="pf-status"></span></div>' +
       "</div>" +
       '<div class="panel col-12" id="pf-device"></div>' +
       "</div>"
     );
+  }
+
+  // Store picker (iOS AccountInfoEditorView, Batch 25). The UKG-detected
+  // store (profile.icsStore) is authoritative and locks the field.
+  const STORES = [["tustin", "Tustin"], ["santa-clara", "Santa Clara"]];
+  function storeTitle(raw) {
+    const t = String(raw || "").trim();
+    if (!t) return "Not set";
+    if (t === "other") return "Another store";
+    const m = STORES.find(s => s[0].toLowerCase() === t.toLowerCase() || s[1].toLowerCase() === t.toLowerCase());
+    return m ? m[1] : t;
+  }
+  function storeLocked() { return !!(String(profile.icsURL || "").trim() && String(profile.icsStore || "").trim()); }
+  function storeFieldHTML() {
+    if (storeLocked()) {
+      return '<div class="field"><label>Store</label><div class="input-static" aria-label="Store, ' + esc(storeTitle(profile.icsStore)) + '. Detected from your schedule.">' +
+        esc(storeTitle(profile.icsStore)) + '</div><div class="hint">Detected from your schedule. Disconnect the UKG calendar to choose a store yourself.</div></div>';
+    }
+    const cur = String(profile.workStore || "");
+    const known = STORES.some(s => s[0] === cur);
+    return '<div class="field"><label for="pf-store">Store</label><select id="pf-store"><option value="">Select…</option>' +
+      STORES.map(s => '<option value="' + s[0] + '"' + (cur === s[0] ? " selected" : "") + ">" + esc(s[1]) + "</option>").join("") +
+      (cur && !known ? '<option value="' + esc(cur) + '" selected>' + esc(storeTitle(cur)) + "</option>" : "") +
+      '</select><div class="hint">This sets your store on the account. It doesn\'t unlock store features.</div></div>';
   }
 
   function validUsername(v) { return /^[A-Za-z0-9_.]{3,20}$/.test(v); }
@@ -235,6 +260,8 @@ const ProfileUI = (() => {
         photoDraft = undefined;
         // Mirror into the blob like AccountInfoEditorView.save().
         const updates = { department: dept, nickname: buddy, state, name: [first, last].join(" ") };
+        const storeSel = $q("#pf-store");
+        if (storeSel) updates.workStore = storeSel.value;
         const tables = Object.assign({}, profile.commissionTables || {});
         if (!tables[dept]) { tables[dept] = gsaDefaults(); updates.commissionTables = tables; }
         await saveProfile(updates, true);

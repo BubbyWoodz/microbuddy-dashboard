@@ -185,7 +185,7 @@ const PastedSaleApplier = {
       const note = key === "" ? "Pasted from the system" : key;
       const lines = group.map(l => ({
         id: "line-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
-        product: l.product, brand: l.brand || "",
+        product: l.product, brand: BrandAliases.canonical(l.brand || ""),
         unitPrice: l.price, quantity: l.quantity,
         kind: l.kind || "inDepartment",
         isReturn: !!l.isReturn, sku: l.sku || null, isExchange: !!l.isExchange,

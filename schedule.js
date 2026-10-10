@@ -76,17 +76,14 @@ const ScheduleUI = (() => {
     const close = new Date(date); close.setHours(sun ? 18 : 21, 0, 0, 0);
     return { open, close };
   }
-  function isOpeningShift(sh) { return new Date(sh.start) < openAndClose(new Date(sh.start)).open; }
-  function isClosingShift(sh) { return new Date(sh.end) > openAndClose(new Date(sh.end)).close; }
+  function isOpeningShift(sh) { const w = ShiftMath.workedStart(sh); return !sh.isRemoved && w < openAndClose(w).open; }
+  function isClosingShift(sh) { const w = ShiftMath.workedEnd(sh); return !sh.isRemoved && w > openAndClose(w).close; }
 
   // ---------------------------------------------------------------------------
   // Shift.swift port — overlap math
   // ---------------------------------------------------------------------------
 
-  function shiftHours(sh) {
-    const s = new Date(sh.start).getTime(), e = new Date(sh.end).getTime();
-    return isNaN(s) || isNaN(e) ? 0 : Math.max(0, (e - s) / 3600000);
-  }
+  function shiftHours(sh) { return ShiftMath.hours(sh); } // actual hours win (Batch 29)
   function shiftDayKey(sh) { return dayKeyOf(new Date(sh.start)); }
 
   function timeParseMinutes(str) {
@@ -108,19 +105,7 @@ const ScheduleUI = (() => {
     if (inside !== undefined) return inside;
     return c.reduce((a, b) => Math.abs(b - lo) < Math.abs(a - lo) ? b : a, value);
   }
-  function overlapHours(sh, cw) {
-    const s = new Date(sh.start), e = new Date(sh.end);
-    if (isNaN(s) || isNaN(e)) return null;
-    const uS = s.getHours() * 60 + s.getMinutes();
-    let uE = e.getHours() * 60 + e.getMinutes();
-    if (uE <= uS) uE += 1440;
-    const sv = timeParseMinutes(cw.start), ev = timeParseMinutes(cw.end);
-    if (sv == null && ev == null) return null;
-    const cS = sv != null ? reading(sv, uS, uE) : uS;
-    let cE = ev != null ? reading(ev, uS, uE + 60) : uE;
-    if (cE < cS) cE += 1440;
-    return Math.max(0, Math.min(uE, cE) - Math.max(uS, cS)) / 60;
-  }
+  function overlapHours(sh, cw) { return ShiftMath.overlapHours(sh, cw); }
   function overlapSummary(sh, cw) {
     const h = overlapHours(sh, cw);
     if (h == null || h <= 0.05) return null;
@@ -133,7 +118,7 @@ const ScheduleUI = (() => {
   // WorkDay lunch — auto minutes: <5h→0, 5–<11h→60, ≥11h→90.
   // ---------------------------------------------------------------------------
 
-  function autoLunchMinutes(h) { return h < 5 ? 0 : h >= 11 ? 90 : 60; }
+  function autoLunchMinutes(h) { return PayEngine.lunchMinutesFor(h, PayEngine.profileLunchDefault(profile)); }
 
   // lunchSummary port — "60m lunch at 12:30 PM", "60m lunch & 30m second lunch
   // at 12:30 PM & 5:00 PM", "no lunch".
@@ -181,7 +166,10 @@ const ScheduleUI = (() => {
 
   let weekStart = startOfWeek(new Date());
   let selectedDayKey = dayKeyOf(new Date());
-  let shifts = [];
+  let shifts = [];      // active shifts (removal tombstones filtered out)
+  let vault = [];       // private coworker schedule vault (Batch 31)
+  let contactsCache = [];
+  let allShifts = [];   // everything in the blob, tombstones included (ICS merge, overlap guard)
   let profile = {};
   let days = {};
   let table = null;
@@ -252,7 +240,8 @@ const ScheduleUI = (() => {
     // the card itself is not a button. Pencil opens the edit sheet.
     let h = '<div class="shift-card" data-shift="' + esc(sh.id) + '">';
     h += '<div class="shift-head"><div class="shift-head-main">' +
-      '<div class="s-time">' + esc(fmtTimeRange(sh.start, sh.end)) + "</div>" +
+      '<div class="s-time">' + esc(fmtTimeRange(ShiftMath.workedStart(sh), ShiftMath.workedEnd(sh))) + "</div>" +
+      (ShiftMath.hasActualHours(sh) ? '<div class="li-sub">Posted ' + esc(fmtTimeRange(sh.start, sh.end)) + " · you worked the hours above</div>" : "") +
       '<div class="s-title">' + esc(sh.title || "Shift") +
       (sh.location ? " · " + esc(sh.location) : "") + "</div>" +
       "</div>" +
@@ -322,8 +311,10 @@ const ScheduleUI = (() => {
 
   function lunchFooter(hrs) {
     const h = Math.round(hrs);
-    if (hrs >= 11) return h + "h shift — two 30-minute breaks, 60 minutes total deducted.";
-    return h + "h shift — one 60-minute lunch auto-deducted.";
+    const m = autoLunchMinutes(hrs);
+    if (hrs >= 11) return h + "h shift — lunch plus a second meal, " + m + " minutes total deducted.";
+    if (!m) return h + "h shift — no lunch deducted.";
+    return h + "h shift — one " + m + "-minute lunch auto-deducted.";
   }
 
   function lunchPickerRow(label, iso, dayKey, field, mins, hrs, sh) {
@@ -419,9 +410,55 @@ const ScheduleUI = (() => {
     return String(name || "").trim().split(/\s+/).map(w => w[0]).join("").slice(0, 2).toUpperCase() || "?";
   }
 
+  // ---- Auto Working With (Batch 24, ScheduleView.refreshMirror) ----
+  const mirrorCache = {}; // shift id + times -> {path, coworkers, asOf}
+  function mirrorFreshness(asOf) {
+    if (!asOf) return "";
+    const d = new Date(String(asOf).slice(0, 10) + "T12:00:00Z");
+    return isNaN(d) ? "" : "schedule as of " + d.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
+  }
+  async function loadMirror(sh) {
+    const key = sh.id + "|" + sh.start + "|" + sh.end;
+    if (mirrorCache[key]) return mirrorCache[key];
+    const r = await SB.mcpTool("get_coworkers", {
+      date: ShiftMath.shiftDayKey(sh), shift_start: ShiftMath.clockLabel(sh.start),
+      shift_end: ShiftMath.clockLabel(sh.end), self_name: profile.name || "" });
+    let snap;
+    if (!r.ok) snap = { path: "manual" };
+    else if (r.payload.status === "unavailable" || r.payload.status === "stale") snap = { path: "unavailable", asOf: r.payload.as_of };
+    else snap = { path: "automatic", coworkers: r.payload.coworkers || [], asOf: r.payload.as_of };
+    if (r.ok || r.reason === "unconfigured") mirrorCache[key] = snap; // transport errors retry next render
+    return snap;
+  }
+  function mirrorHTML(sh, snap) {
+    const foot = '<div class="li-sub">Working With shows General Sales floor coworkers.</div>';
+    const fresh = mirrorFreshness(snap.asOf);
+    if (snap.path === "unavailable") return '<div class="crew-auto"><div class="label">Working With</div><div class="amber">schedule unavailable</div>' + (fresh ? '<div class="li-sub">' + esc(fresh) + "</div>" : "") + foot + "</div>";
+    const crew = snap.coworkers || [];
+    let h = '<div class="crew-auto"><div class="label">Working With · automatic</div>' + (fresh ? '<div class="li-sub navy">' + esc(fresh) + "</div>" : "");
+    if (!crew.length) h += '<div class="li-sub">Nobody on General Sales shares this shift.</div>';
+    crew.forEach(m => {
+      const name = ShiftMath.displayForMirror(m.employee_name, contactsCache);
+      const ov = ShiftMath.overlapSummary(sh, { name, start: m.start, end: m.end });
+      h += '<div class="list-item"><div class="li-main">' + esc(name) + '<div class="li-sub">' + esc((m.start || "") + " – " + (m.end || "")) + (ov ? " · " + esc(ov) + " together" : "") + "</div></div></div>";
+    });
+    return h + foot + "</div>";
+  }
+
   function renderCrewEditor(el) {
     const sh = shifts.find(s => s.id === el.dataset.crewShift);
+    if (sh && usesScheduleMirror()) {
+      el.innerHTML = '<div class="li-sub">Loading Working With…</div>';
+      loadMirror(sh).then(snap => {
+        if (snap.path === "manual") { el.innerHTML = crewRowHTML(sh); bindCrew(el, sh); }
+        else el.innerHTML = mirrorHTML(sh, snap); // automatic never mixes in hand-typed names
+      });
+      return;
+    }
     el.innerHTML = sh ? crewRowHTML(sh) : "";
+    bindCrew(el, sh);
+  }
+  function bindCrew(el, sh) {
     el.querySelectorAll("[data-crew-open]").forEach(b => {
       b.onclick = ev => { ev.stopPropagation(); openCrewSheet(sh); };
     });
@@ -628,7 +665,7 @@ const ScheduleUI = (() => {
   function openShiftEditor(existing) {
     const isNew = !existing;
     let s, e;
-    if (existing) { s = new Date(existing.start); e = new Date(existing.end); }
+    if (existing) { s = ShiftMath.workedStart(existing); e = ShiftMath.workedEnd(existing); }
     else {
       // Default on selected day (or today): 10:00 AM – 6:00 PM.
       s = parseDayKey(selectedDayKey); s.setHours(10, 0, 0, 0);
@@ -649,7 +686,9 @@ const ScheduleUI = (() => {
       esc(existing ? existing.title || "" : "") + '"></div>' +
       '<div class="field"><label>Location</label><input type="text" id="se-loc" value="' +
       esc(existing ? existing.location || "" : "") + '"></div>' +
-      (isNew ? "" : '<div class="li-sub">Your times win — a UKG re-sync keeps this edit.</div>') +
+      (isNew ? "" : existing.isManual
+        ? '<div class="li-sub">Your times win — a UKG re-sync keeps this edit.</div>'
+        : '<div class="li-sub">These are the hours you actually worked. The posted UKG schedule (' + esc(fmtTimeRange(existing.start, existing.end)) + ') stays on record, and pay uses your hours.</div>') +
       '<div class="form-status" id="se-err" hidden></div>' +
       '<div class="btn-row">' +
       '<button class="btn primary" id="se-save">' + (isNew ? "Add shift" : "Save changes") + "</button>" +
@@ -672,6 +711,13 @@ const ScheduleUI = (() => {
       }
       const title = overlay.querySelector("#se-title").value.trim() || "Shift";
       const location = overlay.querySelector("#se-loc").value.trim();
+      // Overlap guard (ShiftLedger.overlap): never double-book a shift.
+      const clash = ShiftMath.ShiftLedger.overlap(start, end, allShifts, isNew ? null : existing.id);
+      if (clash) {
+        err.textContent = ShiftMath.ShiftLedger.overlapMessage(clash) + " Edit or remove that shift first.";
+        err.hidden = false;
+        return;
+      }
       try {
         if (isNew) {
           await SyncEngine.queueWrite({
@@ -697,8 +743,10 @@ const ScheduleUI = (() => {
   }
 
   async function deleteShiftFlow(sh) {
-    if (!confirm("Remove this shift?\n\n" + fmtTimeRange(sh.start, sh.end) +
-      " — this also deletes the lunch and crew saved on it.")) return;
+    const msg = sh.isManual
+      ? "Delete this shift?\n\n" + fmtTimeRange(ShiftMath.workedStart(sh), ShiftMath.workedEnd(sh)) + " — this also deletes the lunch and crew saved on it."
+      : "Mark this shift as missed?\n\n" + fmtTimeRange(sh.start, sh.end) + " — it stops counting toward pay, and a calendar re-sync won't bring it back. You can restore it from the day.";
+    if (!confirm(msg)) return;
     try {
       await SyncEngine.queueWrite({ type: "deleteShift", shiftId: sh.id });
       await reload();
@@ -781,34 +829,10 @@ const ScheduleUI = (() => {
     return out;
   }
 
-  // Exact port of mergeShifts(from:).
+  // Port of ShiftLedger.merge (Batch 29): posted times update; actual
+  // hours, hand edits and removal tombstones survive; no duplicates.
   function mergeShifts(local, fetched) {
-    const merged = local.map(s => Object.assign({}, s));
-    const sameTimes = (a, b) =>
-      new Date(a.start).getTime() === new Date(b.start).getTime() &&
-      new Date(a.end).getTime() === new Date(b.end).getTime();
-    for (const f of fetched) {
-      const idx = merged.findIndex(e => e.id === f.id || sameTimes(e, f));
-      if (idx >= 0) {
-        const ex = merged[idx];
-        const updated = Object.assign({}, f);
-        updated.id = ex.id;
-        updated.coworkers = ex.coworkers || [];
-        if (ex.isEdited) {
-          updated.start = ex.start; updated.end = ex.end;
-          updated.title = ex.title; updated.isEdited = true;
-        }
-        merged[idx] = updated;
-      } else merged.push(Object.assign({}, f));
-    }
-    const todayStart = startOfDay(new Date()).getTime();
-    const kept = merged.filter(s => {
-      if (s.isManual) return true;
-      if (startOfDay(new Date(s.start)).getTime() <= todayStart) return true;
-      return fetched.some(x => x.id === s.id || sameTimes(x, s));
-    });
-    kept.sort((a, b) => new Date(a.start) - new Date(b.start));
-    return { merged: kept, fetchedCount: fetched.length };
+    return { merged: ShiftMath.ShiftLedger.merge(local, fetched, new Date()), fetchedCount: fetched.length };
   }
 
   async function syncCalendar(quiet) {
@@ -828,18 +852,23 @@ const ScheduleUI = (() => {
       if (!res.ok) throw new Error("Couldn't reach the calendar: server responded " + res.status + ".");
       const fetched = parseICS(await res.text());
       if (!fetched.length) throw new Error("The calendar loaded but had no shifts in it.");
-      const { merged } = mergeShifts(shifts, fetched);
-      for (const s of shifts.filter(x => !merged.some(m => m.id === x.id))) {
-        await SyncEngine.queueWrite({ type: "deleteShift", shiftId: s.id });
+      const { merged } = mergeShifts(allShifts, fetched);
+      for (const s of allShifts.filter(x => !merged.some(m => m.id === x.id))) {
+        await SyncEngine.queueWrite({ type: "deleteShift", shiftId: s.id, hard: true });
       }
       for (const m of merged) {
-        if (shifts.some(s => s.id === m.id)) {
-          await SyncEngine.queueWrite({ type: "updateShift", shiftId: m.id, updates: m });
+        const prev = allShifts.find(s => s.id === m.id);
+        if (prev) {
+          if (JSON.stringify(prev) === JSON.stringify(m)) continue;
+          const upd = Object.assign({}, m);
+          // A key the ledger dropped must be cleared, not left behind.
+          ["actualStart", "actualEnd", "ukgIdentifier"].forEach(k => { if (!(k in upd) && (k in prev)) upd[k] = null; });
+          await SyncEngine.queueWrite({ type: "updateShift", shiftId: m.id, updates: upd, feed: true });
         } else {
           await SyncEngine.queueWrite({ type: "addShift", shift: m });
         }
       }
-      shifts = merged;
+      allShifts = merged; shifts = merged.filter(x => !x.isRemoved);
       const nowISO = SB.isoSeconds(new Date());
       await SyncEngine.queueWrite({
         type: "updateProfile", updates: { icsURL: url, lastSyncedAt: nowISO },
@@ -965,6 +994,14 @@ const ScheduleUI = (() => {
     } else {
       h += dayShifts.map(shiftCardHTML).join("");
     }
+    // Removal tombstones (ShiftLedger.disclosedRemovals): say so, offer Restore.
+    for (const r of ShiftMath.ShiftLedger.disclosedRemovals(selectedDayKey, allShifts)) {
+      h += '<div class="shift-card removed" data-shift="' + esc(r.id) + '"><div class="shift-head"><div class="shift-head-main">' +
+        '<div class="s-time">' + esc(fmtTimeRange(r.start, r.end)) + '</div><div class="s-title">Marked missed · not counted toward pay</div></div>' +
+        '<div class="shift-head-side"><button class="btn ghost sm" data-act="restore-shift" data-restore="' + esc(r.id) + '">Restore</button></div></div></div>';
+    }
+    // Gear checkout (Batch 27) — same place as the app's Schedule day.
+    if (dayShifts.length) h += '<div class="panel gear-panel">' + GearUI.html(selectedDayKey, days[selectedDayKey]) + "</div>";
     // "View day" link when the day has logged sales (WorkDay keyed by id).
     const day = days[selectedDayKey];
     if (day && Array.isArray(day.tickets) && day.tickets.length) {
@@ -1003,6 +1040,13 @@ const ScheduleUI = (() => {
     return n ? n + " reminder" + (n === 1 ? "" : "s") + " on" : "All reminders off";
   }
 
+  // UserProfile.canEnableAutoWorkingWith / usesScheduleMirror (ScheduleMirror.swift).
+  function canAutoWorkingWith() {
+    return !!String(profile.icsURL || "").trim() && /^(tustin)$/i.test(String(profile.icsStore || "").trim());
+  }
+  function usesScheduleMirror() { return canAutoWorkingWith() && !!profile.autoWorkingWith; }
+  function renderSettingsAgain() { try { if (settingsBox) renderSettings(settingsBox, settingsSection); } catch (e) {} }
+
   function settingsHTML() {
     const icsURL = profile.icsURL || "";
     let h = '<div class="grid">';
@@ -1015,8 +1059,14 @@ const ScheduleUI = (() => {
       (syncing ? "Syncing…" : "Sync schedule now") + "</button></div>" +
       (syncMessage ? '<div class="form-status">' + esc(syncMessage) + "</div>" : "") +
       '<div class="kv-row"><span class="k muted">' + I("clock", { size: 14 }) + " " + esc(lastSyncText()) + "</span></div>" +
-      '<div class="hint">Lunch is automatic: one 60-minute break on 5–11h shifts, ' +
-      "two 30-minute breaks on 11h+ shifts, none under 5h. Set the times on each shift in Schedule.</div></div>";
+      '<div class="hint">Lunch is automatic: none under 5h, your default lunch (' + PayEngine.profileLunchDefault(profile) + ' min) on 5–11h shifts, ' +
+      "and a 60-minute lunch plus a 30-minute second meal on 11h+ shifts. Set the times on each shift in Schedule.</div></div>";
+    // Auto Working With (Batch 24) — only when the UKG feed says Tustin.
+    const eligible = canAutoWorkingWith();
+    const on = eligible && !!profile.autoWorkingWith;
+    h += '<div class="panel col-6"><div class="switch-row"><div class="grow"><div class="sec-title">Auto Working With</div>' +
+      '<div class="sec-sub">' + esc(!eligible ? "Auto Working With is only available at Tustin." : on ? "Coworkers come from the Tustin schedule." : "Off. You add coworkers by hand.") + "</div></div>" +
+      '<label class="switch"><input type="checkbox" id="auto-ww" role="switch" aria-label="Auto Working With"' + (on ? " checked" : "") + (eligible ? "" : " disabled") + '><span></span></label></div></div>';
 
     const nHol = holidayDates.length;
     h += '<div class="panel col-6"><div class="sec-head"><div class="grow"><div class="sec-title">Holiday hours</div>' +
@@ -1086,6 +1136,13 @@ const ScheduleUI = (() => {
       } catch (e) { alert("Couldn't save calendar link."); }
       refresh();
     });
+    const aww = box.querySelector("#auto-ww");
+    if (aww) aww.onchange = async () => {
+      if (!canAutoWorkingWith()) { aww.checked = false; return; }
+      profile.autoWorkingWith = aww.checked;
+      try { await SyncEngine.queueWrite({ type: "updateProfile", updates: { autoWorkingWith: aww.checked } }); } catch (e) {}
+      renderSettingsAgain();
+    };
     const syncBtn = box.querySelector("#ics-sync");
     if (syncBtn) syncBtn.onclick = () => syncCalendar(false);
     const notifBtn = box.querySelector("#notif-enable");
@@ -1180,8 +1237,11 @@ const ScheduleUI = (() => {
 
   async function reload() {
     const data = await getBlobData();
-    shifts = (Array.isArray(data.shifts) ? data.shifts : [])
+    allShifts = (Array.isArray(data.shifts) ? data.shifts : [])
       .slice().sort((a, b) => new Date(a.start) - new Date(b.start));
+    shifts = allShifts.filter(sh => !sh.isRemoved);
+    vault = Array.isArray(data.scheduleVault) ? data.scheduleVault : [];
+    contactsCache = Array.isArray(data.contacts) ? data.contacts : [];
     profile = data.profile || {};
     days = indexDays(data.days);
     table = PayEngine.tableForProfile(profile);
@@ -1253,6 +1313,17 @@ const ScheduleUI = (() => {
       const del = card.querySelector('[data-act="delete-shift"]');
       if (del) del.onclick = ev => { ev.stopPropagation(); deleteShiftFlow(sh); };
     });
+    box.querySelectorAll("[data-restore]").forEach(b => {
+      b.onclick = async () => {
+        const r = allShifts.find(x => x.id === b.dataset.restore);
+        if (!r) return;
+        const clash = ShiftMath.ShiftLedger.overlap(r.start, r.end, allShifts, r.id);
+        if (clash) { alert(ShiftMath.ShiftLedger.overlapMessage(clash) + " Remove it first to restore this one."); return; }
+        try { await SyncEngine.queueWrite({ type: "restoreShift", shiftId: r.id }); await reload(); }
+        catch (e) { alert("Couldn't restore that shift."); }
+      };
+    });
+    GearUI.bind(box);
     box.querySelectorAll(".shift-lunch").forEach(renderLunchEditor);
     box.querySelectorAll(".shift-crew").forEach(renderCrewEditor);
 

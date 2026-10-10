@@ -112,19 +112,18 @@ const PayEngine = (() => {
 
   /// Commission rate for one unit at `unitPrice`.
   /// Port of CommissionTable.rate(unitPrice:kind:) (CommissionTable.swift:68-82).
-  /// Note the exact edge behavior: a price in a gap between tiers (e.g. 9.995)
-  /// matches nothing and falls back to the last tier's rate.
+  /// Batch 15 rule: a price in the gap after a labeled cap (e.g. $9.995 from a
+  /// split bundle or refund) stays in the bracket whose minimum it has reached;
+  /// it never falls through to the open-ended last tier.
   function commissionRate(table, unitPrice, kind) {
     if (kind === "servicePlan") return table.servicePlanRate;
     if (kind === "outOfDepartment") return table.outOfDepartmentRate;
     const price = Math.abs(unitPrice);
-    const sorted = [...table.tiers].sort((a, b) => a.minPrice - b.minPrice);
-    for (const tier of sorted) {
-      const upper = (tier.maxPrice === null || tier.maxPrice === undefined)
-        ? Infinity : tier.maxPrice;
-      if (price >= tier.minPrice && price <= upper) return tier.rate;
-    }
-    return sorted.length ? sorted[sorted.length - 1].rate : 0;
+    const sorted = [...(table.tiers || [])].sort((a, b) => a.minPrice - b.minPrice);
+    if (!sorted.length) return 0;
+    let matched = sorted[0];
+    for (const tier of sorted.slice(1)) if (price >= tier.minPrice) matched = tier;
+    return matched.rate;
   }
 
   /// Resolve the commission table for a profile.
@@ -163,6 +162,22 @@ const PayEngine = (() => {
   // ---------------------------------------------------------------------------
   // WorkDay.swift — hours and California daily overtime
   // ---------------------------------------------------------------------------
+
+  /// LunchPolicy (WorkDay.swift, Batch 15): shift length overrides the
+  /// profile default. Under 5h -> 0; 11h+ -> 90 (60 lunch + 30 second meal);
+  /// otherwise the profile's defaultLunchMinutes (30 unless changed).
+  const LUNCH_FALLBACK = 30;
+  function lunchMinutesFor(scheduledHours, profileDefault) {
+    const h = Number(scheduledHours) || 0;
+    if (h < 5) return 0;
+    if (h >= 11) return 90;
+    const d = Number(profileDefault);
+    return Math.max(0, isFinite(d) && profileDefault !== null && profileDefault !== undefined && profileDefault !== "" ? Math.round(d) : LUNCH_FALLBACK);
+  }
+  function profileLunchDefault(profile) {
+    const v = profile && profile.defaultLunchMinutes;
+    return (typeof v === "number" && isFinite(v)) ? v : LUNCH_FALLBACK;
+  }
 
   /// Paid hours actually worked (lunch removed). (WorkDay.swift:60-62)
   function workedHours(day) {
@@ -219,8 +234,10 @@ const PayEngine = (() => {
     const dayStart = localMidnight(key);
     const openMs = dayStart + open * 3600000;
     const closeMs = dayStart + close * 3600000;
-    const startMs = (shift.start instanceof Date ? shift.start : new Date(shift.start)).getTime();
-    const endMs = (shift.end instanceof Date ? shift.end : new Date(shift.end)).getTime();
+    // Batch 29: actual (UKG-override) hours win over the posted schedule.
+    const ws = shift.actualStart || shift.start, we = shift.actualEnd || shift.end;
+    const startMs = (ws instanceof Date ? ws : new Date(ws)).getTime();
+    const endMs = (we instanceof Date ? we : new Date(we)).getTime();
     return {
       opening: Math.max(0, (openMs - startMs) / 3600000),
       closing: Math.max(0, (endMs - closeMs) / 3600000),
@@ -234,6 +251,7 @@ const PayEngine = (() => {
   function dayPremium(shifts, key, holidayDates) {
     let openingHours = 0, closingHours = 0;
     for (const shift of (shifts || [])) {
+      if (shift && shift.isRemoved) continue; // removal tombstone: not worked
       const h = premiumHoursForShift(shift, key, holidayDates);
       openingHours += h.opening;
       closingHours += h.closing;
@@ -253,6 +271,7 @@ const PayEngine = (() => {
   function premiumsByDay(shifts, holidayDates) {
     const result = {};
     for (const shift of (shifts || [])) {
+      if (shift && shift.isRemoved) continue; // removal tombstone: not worked
       const key = dayKey(shift.start);
       const h = premiumHoursForShift(shift, key, holidayDates);
       const p = result[key] || { openingHours: 0, closingHours: 0 };
@@ -282,10 +301,9 @@ const PayEngine = (() => {
   /// (PayPeriod.swift:28-34)
   const ANCHOR_PAYDAY = "2026-09-18";
 
-  /// The pay period containing a day key: the 14 days ending the day before
-  /// the next payday in the biweekly cycle.
-  /// Port of PayPeriod.containing (PayPeriod.swift:38-55).
-  function payPeriodContaining(key) {
+  /// The 14-day block a day belongs to; payday is the first day of the new
+  /// block. Use for pay math. Port of PayPeriod.block(containing:).
+  function payPeriodBlock(key) {
     const k = dayKey(key);
     const delta = daysBetween(k, ANCHOR_PAYDAY); // day -> anchor
     const periodsAway = Math.ceil((1 - delta) / 14);
@@ -295,6 +313,18 @@ const PayEngine = (() => {
       end: addDays(payday, -1),
       payday,
     };
+  }
+
+  function isPayday(key) {
+    const d = daysBetween(ANCHOR_PAYDAY, dayKey(key));
+    return ((d % 14) + 14) % 14 === 0;
+  }
+
+  /// Display rule (Batch 21, PayPeriod.containing): on payday itself the
+  /// period that just closed is shown; every other day uses its block.
+  function payPeriodContaining(key) {
+    const k = dayKey(key);
+    return isPayday(k) ? payPeriodBlock(addDays(k, -1)) : payPeriodBlock(k);
   }
 
   /// True when a day key falls inside the period.
@@ -307,10 +337,10 @@ const PayEngine = (() => {
 
   /// The period immediately before / after this one. (PayPeriod.swift:58-68)
   function previousPeriod(period) {
-    return payPeriodContaining(addDays(period.start, -1));
+    return payPeriodBlock(addDays(period.start, -1));
   }
   function nextPeriod(period) {
-    return payPeriodContaining(addDays(period.end, 1));
+    return payPeriodBlock(addDays(period.end, 1));
   }
 
   const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -537,7 +567,7 @@ const PayEngine = (() => {
   }
 
   function shiftsForDay(shifts, key) {
-    return (shifts || []).filter(s => dayKey(s.start) === key);
+    return (shifts || []).filter(s => s && !s.isRemoved && dayKey(s.start) === key);
   }
 
   // ---------------------------------------------------------------------------
@@ -559,7 +589,7 @@ const PayEngine = (() => {
     // store hours / premium
     openAndClose, premiumHoursForShift, dayPremium, premiumsByDay, emptyPremium,
     // pay periods
-    payPeriodContaining, periodContains, previousPeriod, nextPeriod,
+    lunchMinutesFor, profileLunchDefault, payPeriodContaining, payPeriodBlock, isPayday, periodContains, previousPeriod, nextPeriod,
     periodLabel, paydayLabel,
     // pay engine
     dayPay, periodSummary,

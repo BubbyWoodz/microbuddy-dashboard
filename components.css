@@ -1210,3 +1210,18 @@ a.cw-info-link .cw-info-value { color: var(--accent); }
 .cw-list-head .sec-title { font-size: 17px; }
 /* Settings menu subtitles wrap instead of truncating. */
 .sr-sub { white-space: normal; overflow: visible; text-overflow: clip; }
+
+/* 2.0.11: gear checkout, store field, removed shifts, automatic crew */
+.input-static { padding: 10px 12px; border-radius: 12px; background: var(--surface-high); border: var(--field-border); font-weight: 700; overflow-wrap: anywhere; }
+.gear { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.gear-head { text-transform: uppercase; letter-spacing: .04em; }
+.gear-row { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
+.gear-row b { overflow-wrap: anywhere; text-align: right; }
+.dd-gear { padding: 0 14px 12px; }
+.gear-panel { margin-top: 10px; }
+.shift-card.removed { opacity: .7; border-style: dashed; }
+.crew-auto { display: flex; flex-direction: column; gap: 4px; }
+/* No truncated text (user rule): wrap instead of ellipsis everywhere. */
+.tile .c, .tile .big, .rank .name, .home-greet .name, .wc-meta, .crew-name, .cu-crew, .sr-sub,
+.dd-line .p, .mc-rowsub, .session-title, .lb-name, .lb-sub { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+.tile .v { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }

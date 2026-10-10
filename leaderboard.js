@@ -229,7 +229,7 @@ const LeaderboardUI = (() => {
     const days = data.days || [];
     const profile = data.profile || {};
     const table = PayEngine.tableForProfile(profile);
-    const shifts = data.shifts || [];
+    const shifts = (data.shifts || []).filter(s => s && !s.isRemoved);
     const holidayDates = data.holidayDates || [];
     let premiumByDay = {};
     try { premiumByDay = PayEngine.premiumsByDay(shifts, holidayDates) || {}; } catch (e) {}
