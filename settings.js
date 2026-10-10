@@ -219,6 +219,7 @@ const SettingsUI = (() => {
         await fetch("/api/session/logout", { method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ access_token: token }) });
       } catch (e) {}
+      try { document.body.classList.add("locked"); } catch (e) {}
       try { await MBDB.wipeAll(); } catch (e) {}
       try { localStorage.removeItem("mb_supabase_session"); localStorage.removeItem("mb_dashboard_link"); } catch (e) {}
       location.reload();

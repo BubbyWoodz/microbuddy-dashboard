@@ -12,8 +12,8 @@
 <meta name="apple-mobile-web-app-title" content="Micro Buddy">
 <link rel="apple-touch-icon" href="/icons/icon-180.png">
 <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
-<link rel="stylesheet" href="/themes.css?v=2.0.12">
-<link rel="stylesheet" href="/components.css?v=2.0.12">
+<link rel="stylesheet" href="/themes.css?v=2.0.13">
+<link rel="stylesheet" href="/components.css?v=2.0.13">
 <script>
 /* Apply the last theme before first paint (no flash of the default). */
 (function () {
@@ -61,8 +61,14 @@ function toast(msg, kind) {
 }
 window.toast = toast;
 </script>
+<style>
+  /* Auth gate first: nothing user-specific is visible until the server
+     confirms a session. Only a neutral splash (the login photo) shows. */
+  body.locked > .app-header, body.locked > .app-main { display: none !important; }
+  body.locked { background: #141b28 url("/login-bg.jpg") center / cover no-repeat fixed; min-height: 100vh; }
+</style>
 </head>
-<body>
+<body class="locked">
 
 <header class="app-header">
   <div class="app-header-inner">
@@ -151,32 +157,32 @@ window.toast = toast;
   </div>
 </div>
 
-<script src="/icons.js?v=2.0.12"></script>
-<script src="/db.js?v=2.0.12"></script>
-<script src="/sb.js?v=2.0.12"></script>
-<script src="/sync.js?v=2.0.12"></script>
-<script src="/brandaliases.js?v=2.0.12"></script>
-<script src="/shiftmath.js?v=2.0.12"></script>
-<script src="/payengine.js?v=2.0.12"></script>
-<script src="/daydetail.js?v=2.0.12"></script>
-<script src="/stats.js?v=2.0.12"></script>
-<script src="/badges.js?v=2.0.12"></script>
-<script src="/sales.js?v=2.0.12"></script>
-<script src="/sale-entry.js?v=2.0.12"></script>
-<script src="/schedule.js?v=2.0.12"></script>
-<script src="/journal.js?v=2.0.12"></script>
-<script src="/coworkers.js?v=2.0.12"></script>
-<script src="/goals.js?v=2.0.12"></script>
-<script src="/microcharm.js?v=2.0.12"></script>
-<script src="/profile.js?v=2.0.12"></script>
-<script src="/leaderboard.js?v=2.0.12"></script>
-<script src="/brands.js?v=2.0.12"></script>
-<script src="/home-widgets.js?v=2.0.12"></script>
+<script src="/icons.js?v=2.0.13"></script>
+<script src="/db.js?v=2.0.13"></script>
+<script src="/sb.js?v=2.0.13"></script>
+<script src="/sync.js?v=2.0.13"></script>
+<script src="/brandaliases.js?v=2.0.13"></script>
+<script src="/shiftmath.js?v=2.0.13"></script>
+<script src="/payengine.js?v=2.0.13"></script>
+<script src="/daydetail.js?v=2.0.13"></script>
+<script src="/stats.js?v=2.0.13"></script>
+<script src="/badges.js?v=2.0.13"></script>
+<script src="/sales.js?v=2.0.13"></script>
+<script src="/sale-entry.js?v=2.0.13"></script>
+<script src="/schedule.js?v=2.0.13"></script>
+<script src="/journal.js?v=2.0.13"></script>
+<script src="/coworkers.js?v=2.0.13"></script>
+<script src="/goals.js?v=2.0.13"></script>
+<script src="/microcharm.js?v=2.0.13"></script>
+<script src="/profile.js?v=2.0.13"></script>
+<script src="/leaderboard.js?v=2.0.13"></script>
+<script src="/brands.js?v=2.0.13"></script>
+<script src="/home-widgets.js?v=2.0.13"></script>
 <script src="/qrcode.min.js"></script>
-<script src="/settings.js?v=2.0.12"></script>
-<script src="/screen-lock.js?v=2.0.12"></script>
-<script src="/buddy-actions.js?v=2.0.12"></script>
-<script src="/buddy.js?v=2.0.12"></script>
+<script src="/settings.js?v=2.0.13"></script>
+<script src="/screen-lock.js?v=2.0.13"></script>
+<script src="/buddy-actions.js?v=2.0.13"></script>
+<script src="/buddy.js?v=2.0.13"></script>
 
 <script>
 "use strict";
@@ -413,21 +419,33 @@ window.addEventListener("online", () => syncNow(true));
 
 // ---- Login gate + QR pairing ----
 function gated() { return !$("login-gate").classList.contains("hidden"); }
+// Runs before anything user-specific renders (body starts .locked).
+// The server saying "no session" is final unless resume succeeds right now:
+// local data is wiped before the QR gate shows. Only when the dashboard
+// server itself can't be reached (offline) does a still-linked browser
+// open its cached copy.
 async function checkSession() {
+  let d = null;
   try {
     const r = await fetch("/api/session", { cache: "no-store" });
-    if (!r.ok) return true; // server hiccup: show cached data
-    const d = await r.json().catch(() => null);
-    if (!(d && d.logged_in === false)) return true;
-    const v = await tryResume();
-    if (v === "unlinked") { await wipeLocal(); return false; }
-    return v === "ok" || v === "retry" ? hasLocalLogin() : false;
-  } catch (e) { return true; } // offline: let cached data render
+    if (!r.ok) return hasLocalLogin(); // server error: same as offline
+    d = await r.json().catch(() => null);
+  } catch (e) { return hasLocalLogin(); } // offline
+  if (d && d.logged_in === true) {
+    if (hasLocalLogin()) return true;
+    // Server session but this browser has no login of its own: nothing to show.
+    await wipeLocal(); return false;
+  }
+  const v = hasLocalLogin() ? await tryResume() : "unlinked";
+  if (v === "ok") return true;
+  await wipeLocal();
+  return false;
 }
 function hasLocalLogin() {
   try { return !!localStorage.getItem("mb_supabase_session"); } catch (e) { return false; }
 }
 async function wipeLocal() {
+  lockShell();
   try { await MBDB.wipeAll(); } catch (e) {}
   try { localStorage.removeItem("mb_supabase_session"); localStorage.removeItem("mb_dashboard_link"); } catch (e) {}
 }
@@ -472,10 +490,19 @@ async function heartbeat() {
 }
 async function handleUnlinked() {
   stopUnlinkWatch();
+  lockShell();
   await wipeLocal();
   showLoginGate("This dashboard was unlinked from the iPhone app — scan a new code to link again.");
 }
+function lockShell() {
+  document.body.classList.add("locked");
+  // Drop anything already painted so no user data stays in the DOM.
+  ["home-widgets-body", "buddy-body", "sales-body", "sched-body", "stats-body", "settings-pane-body", "settings-id"].forEach(id => {
+    const el = document.getElementById(id); if (el) el.innerHTML = "";
+  });
+}
 function showLoginGate(msg) {
+  lockShell();
   $("login-gate").classList.remove("hidden");
   if (msg) $("login-err").textContent = msg;
   try { ScreenLock.hide(); } catch (e) {}
@@ -556,6 +583,9 @@ function startUnlinkWatch() { stopUnlinkWatch(); unlinkTimer = setInterval(watch
 function stopUnlinkWatch() { if (unlinkTimer) { clearInterval(unlinkTimer); unlinkTimer = null; } }
 
 async function afterLogin() {
+  document.body.classList.remove("locked");
+  // App-shell cache only once signed in (it never holds API data; see sw.js).
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
   startUnlinkWatch();
   try { ScreenLock.init(); } catch (e) {}
   await SyncEngine.syncPreferences().catch(() => {});
@@ -600,7 +630,6 @@ window.addEventListener("hashchange", () => {
 
 async function boot() {
   paintIcons();
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
   SyncEngine.bindUI();
   try { await SettingsUI.applyCachedTheme(); } catch (e) {}
   $("today-label").textContent = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
