@@ -939,7 +939,31 @@ const ScheduleUI = (() => {
   // "Coming up" — next 8 shifts
   // ---------------------------------------------------------------------------
 
+  // ScheduleView.crewLine: in Auto Working With mode the row shows the
+  // automatic crew (nothing while loading / unavailable); manual crew only
+  // when the mirror isn't set up for this account.
   function crewLine(sh) {
+    if (usesScheduleMirror()) {
+      const snap = mirrorCache[sh.id + "|" + sh.start + "|" + sh.end];
+      if (!snap) { fillMirrorRow(sh); return ""; }
+      if (snap.path === "automatic") {
+        const names = (snap.coworkers || []).map(m => ShiftMath.displayForMirror(m.employee_name, contactsCache)).filter(Boolean);
+        if (!names.length) return "";
+        return "With " + names.slice(0, 4).join(", ") + (names.length > 4 ? " +" + (names.length - 4) + " more" : "");
+      }
+      if (snap.path !== "manual") return "";
+    }
+    return manualCrewLine(sh);
+  }
+  function fillMirrorRow(sh) {
+    loadMirror(sh).then(() => {
+      const line = crewLine(sh);
+      const row = document.querySelector('.coming-row[data-shift="' + (window.CSS && CSS.escape ? CSS.escape(sh.id) : sh.id) + '"] .cu-time');
+      if (!line || !row || row.parentNode.querySelector(".cu-crew")) return;
+      row.insertAdjacentHTML("afterend", '<span class="cu-crew">' + I("users", { size: 12 }) + " " + esc(line) + "</span>");
+    }).catch(() => {});
+  }
+  function manualCrewLine(sh) {
     const crew = (sh.coworkers || []).map(c => typeof c === "string" ? c : c.name).filter(Boolean);
     if (!crew.length) return "";
     const shown = crew.slice(0, 4).join(", ");
@@ -967,7 +991,7 @@ const ScheduleUI = (() => {
         '<span class="cu-main"><span class="cu-dow">' +
         d.toLocaleDateString(undefined, { weekday: "long" }) + "</span>" +
         '<span class="cu-time">' + esc(fmtTimeRange(sh.start, sh.end)) + "</span>" +
-        (crewLine(sh) ? '<span class="cu-crew">' + I("users", { size: 12 }) + " " + esc(crewLine(sh)) + "</span>" : "") +
+        ((cl => cl ? '<span class="cu-crew">' + I("users", { size: 12 }) + " " + esc(cl) + "</span>" : "")(crewLine(sh))) +
         (lunch !== "no lunch" ? '<span class="li-sub amber">' + esc(lunch) + "</span>" : "") +
         '</span><span class="cu-hours">' + shiftHours(sh).toFixed(1) + "h</span></button>";
     });
