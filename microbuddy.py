@@ -139,7 +139,7 @@ APP_BUNDLE_ID = _read_secret("APPLE_APP_BUNDLE_ID", ".apple_app_id")
 # reboot. Unlink (/api/pair/revoke) and /logout clear it and re-save, so a
 # wiped login can never be resurrected by a restart.
 SESSIONS: dict[str, dict] = {}
-DASHBOARD_VERSION = "2.0.13"
+DASHBOARD_VERSION = "2.0.14"
 # Server state lives on the mounted users volume (/app/users), NOT in the
 # image's /app: an app update replaces the container, and anything outside a
 # volume (the old /app/.sessions.json, /app/.widget_token) vanished with it,
@@ -412,6 +412,23 @@ def _drop_sessions(pred) -> list[dict]:
 # that user's own session; deleted when the user's last session here ends.
 OFFLINE_KEY_FILE = os.path.join(SERVER_DIR, "offline.key")
 OFFLINE_MAX_BYTES = 40 * 1024 * 1024
+PHOTO_MAX_BYTES = 16 * 1024 * 1024
+
+
+def heic_to_jpeg(raw: bytes, max_side: int = 512) -> bytes:
+    """Decode any HEIC/HEIF/AVIF (8/10/12-bit, EXIF-rotated) to an sRGB JPEG."""
+    import io
+    from PIL import Image, ImageOps
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+    img = Image.open(io.BytesIO(raw))
+    img = ImageOps.exif_transpose(img)
+    if img.mode not in ("RGB", "L"):
+        img = img.convert("RGB")
+    img.thumbnail((max_side, max_side))
+    out = io.BytesIO()
+    img.save(out, "JPEG", quality=85)
+    return out.getvalue()
 _OFFLINE_LOCK = threading.Lock()
 
 
@@ -1757,6 +1774,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send(401, json.dumps({"error": "login required"}).encode())
             return
         sub = sess.get("sub", "")
+
+        if path == "/api/photo/jpeg":
+            # HEIC/HEIF contact photos (incl. 10-bit HDR "heix" from Apple
+            # Contacts) -> small JPEG. Browsers can't draw HEIC and heic2any
+            # garbles 10-bit files. Nothing is stored; the browser caches it.
+            body = self._read_json_body(PHOTO_MAX_BYTES)
+            try:
+                raw = base64.b64decode(re.sub(r"^data:[^,]*,", "", str(body.get("data", ""))), validate=False)
+                self._send(200, json.dumps({"jpeg": base64.b64encode(heic_to_jpeg(raw)).decode()}).encode())
+            except Exception as e:
+                print(f"[photo] convert failed: {type(e).__name__}", flush=True)
+                self._send(422, json.dumps({"error": "couldn't convert photo"}).encode())
+            return
 
         if path == "/api/offline-copy":
             body = self._read_json_body(OFFLINE_MAX_BYTES)

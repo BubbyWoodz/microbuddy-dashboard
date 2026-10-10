@@ -5,12 +5,13 @@
 FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="Micro Buddy Dashboard" \
-      org.opencontainers.image.version="2.0.10"
+      org.opencontainers.image.version="2.0.14"
 
 ENV PYTHONUNBUFFERED=1 \
     SUPABASE_URL=https://tgarraczeevyrjfxzkkf.supabase.co
 
 WORKDIR /app
+RUN pip install --no-cache-dir pillow==11.* pillow-heif==1.*
 COPY microbuddy.py dashboard.html manifest.json sw.js themes.css components.css ./
 COPY badges.js brands.js buddy.js buddy-actions.js coworkers.js daydetail.js db.js heic2any.min.js \
      goals.js home-widgets.js icons.js journal.js leaderboard.js microcharm.js \
