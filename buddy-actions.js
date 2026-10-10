@@ -222,6 +222,7 @@ const BuddyActions = (() => {
   function shiftForDay(data, dayId) {
     if (!Array.isArray(data.shifts)) return null;
     return data.shifts.find(s => {
+      if (s && s.isRemoved) return false; // removal tombstone
       try { return dayKeyOf(new Date(s.start)) === dayId; } catch (e) { return false; }
     }) || null;
   }
@@ -663,6 +664,10 @@ const BuddyActions = (() => {
             updates: { start: start.toISOString(), end: end.toISOString(), isEdited: true },
           });
           shift = Object.assign({}, shift, { start: start.toISOString(), end: end.toISOString() });
+        } else if (ShiftMath.ShiftLedger.overlap(start, end, data.shifts || [])) {
+          // Overlap guard (Batch 29): never double-book.
+          lines.push(dayName(day.dateKey) + ": " + ShiftMath.ShiftLedger.overlapMessage(ShiftMath.ShiftLedger.overlap(start, end, data.shifts || [])) + " Skipped.");
+          continue;
         } else {
           const ns = {
             id: uid("sh"), start: start.toISOString(), end: end.toISOString(),
@@ -840,7 +845,7 @@ const BuddyActions = (() => {
     const hour = now.getHours();
     const data = await getData().catch(() => ({}));
     const days = Array.isArray(data.days) ? data.days : [];
-    const shifts = Array.isArray(data.shifts) ? data.shifts : [];
+    const shifts = (Array.isArray(data.shifts) ? data.shifts : []).filter(s => s && !s.isRemoved);
     const goals = Array.isArray(data.goals) ? data.goals : [];
     const todayKey = dayKeyOf(now);
     const yest = new Date(now.getTime() - 86400000);

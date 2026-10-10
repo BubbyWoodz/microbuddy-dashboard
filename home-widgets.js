@@ -77,7 +77,7 @@ const HomeWidgetsUI = (() => {
   function normalizeData(data) {
     const d = data || {};
     const days = Array.isArray(d.days) ? d.days : (d.days ? Object.values(d.days) : []);
-    const shifts = Array.isArray(d.shifts) ? d.shifts : [];
+    const shifts = (Array.isArray(d.shifts) ? d.shifts : []).filter(s => s && !s.isRemoved);
     const profile = d.profile || {};
     const table = d.table || PayEngine.tableForProfile(profile);
     const holidays = d.holidayDates || profile.holidayDates || [];
@@ -163,7 +163,7 @@ const HomeWidgetsUI = (() => {
 
   function greetingHTML(d) {
     const profile = d.profile;
-    const shift = nextShift(d.shifts);
+    const shift = nextShift((d.shifts || []).filter(s => s && !s.isRemoved));
     const name = displayName(profile);
     return `<div class="panel col-12 home-greet">` +
       `<div class="greet-text"><div class="hi">${esc(greetingText())}</div>` +
@@ -177,7 +177,7 @@ const HomeWidgetsUI = (() => {
   function paydayRecapHTML(d) {
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const period = PayEngine.payPeriodContaining(todayKeyLocal());
+    const period = PayEngine.payPeriodBlock(todayKeyLocal()) // block: the recap is the period before the current block;
     const finished = PayEngine.previousPeriod(period);
     const pd = PayEngine.parseKey(finished.payday);
     const paydayStart = new Date(pd.getUTCFullYear(), pd.getUTCMonth(), pd.getUTCDate());

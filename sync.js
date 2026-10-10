@@ -420,13 +420,25 @@ const SyncEngine = (() => {
   }
 
   // Apply a single mutation op to a backup blob (pure function).
+  /// ShiftLedger.payableHours -> the existing workday's hours (iOS setHours).
+  /// Removed shifts contribute nothing. Days are never created here.
+  function syncShiftDayHours(data, sh) {
+    try {
+      if (typeof ShiftMath === "undefined" || !Array.isArray(data.days)) return;
+      const key = ShiftMath.shiftDayKey(sh);
+      const day = data.days.find(d => d && d.id === key);
+      if (!day) return;
+      day.scheduledHours = Math.max(0, ShiftMath.ShiftLedger.payableHours(key, data.shifts || []));
+    } catch (e) {}
+  }
+
   function applyOp(backup, op) {
     if (!backup || !backup.data) return false;
     const data = backup.data;
     if (!Array.isArray(data.days)) data.days = [];
     const dayId = op.dayId;
     let day = data.days.find(d => d.id === dayId);
-    if (!day && (op.type === "addTicket" || op.type === "addLine" || op.type === "setDayNote" || op.type === "pasteSalesReport")) {
+    if (!day && (op.type === "addTicket" || op.type === "addLine" || op.type === "setDayNote" || op.type === "pasteSalesReport" || op.type === "setGear")) {
       // Mirror AppStore.ensureDay: hours seeded from the schedule (0 = day
       // off), lunch by the break rules; the sanitizer fills date/note.
       day = { id: dayId, tickets: [], note: "" };
@@ -444,7 +456,7 @@ const SyncEngine = (() => {
     // without a dayId the lookup finds nothing and the old early return
     // would silently kill them.
     const GLOBAL_OP_TYPES = new Set([
-      "addShift", "updateShift", "deleteShift", "updateProfile",
+      "addShift", "updateShift", "deleteShift", "restoreShift", "updateProfile",
       "updateContact", "addContact", "deleteContact",
       "addShiftNote", "deleteShiftNote",
       "addComparison", "updateComparison", "deleteComparison",
@@ -494,6 +506,15 @@ const SyncEngine = (() => {
         day.note = op.note || "";
         return true;
       }
+      case "setGear": {
+        // Shift gear checkout (Batch 27, GearCheckout.stored): trimmed, blank = absent.
+        ["ekeyNumber", "walkieNumber"].forEach(k => {
+          if (!(k in op)) return;
+          const v = String(op[k] == null ? "" : op[k]).trim();
+          if (v) day[k] = v; else delete day[k];
+        });
+        return true;
+      }
       case "updateDay": {
         // Hours/lunch editor from Day Detail.
         Object.assign(day, op.updates || {});
@@ -521,15 +542,42 @@ const SyncEngine = (() => {
       }
       case "updateShift": {
         // Find by id, shallow-merge updates. Caller sets isEdited:true on hand edits.
+        // Batch 29 (ShiftLedger.applyingEdit): a hand edit of a UKG shift's
+        // times lands in actualStart/actualEnd so the posted schedule stays;
+        // a removed (tombstoned) shift's times are never edited.
         if (!Array.isArray(data.shifts)) return true;
         const sh = data.shifts.find(s => s.id === op.shiftId);
-        if (sh && op.updates) Object.assign(sh, op.updates);
+        if (sh && op.updates) {
+          const upd = Object.assign({}, op.updates);
+          const timeEdit = ("start" in upd || "end" in upd) && upd.isEdited === true && !op.feed;
+          if (timeEdit && sh.isRemoved) { delete upd.start; delete upd.end; delete upd.actualStart; delete upd.actualEnd; }
+          else if (timeEdit && !sh.isManual) {
+            if ("start" in upd) { upd.actualStart = upd.start; delete upd.start; }
+            if ("end" in upd) { upd.actualEnd = upd.end; delete upd.end; }
+          } else if (timeEdit && sh.isManual) { upd.actualStart = null; upd.actualEnd = null; }
+          Object.assign(sh, upd);
+          ["actualStart", "actualEnd", "ukgIdentifier"].forEach(k => { if (sh[k] == null) delete sh[k]; });
+          if (timeEdit || "isRemoved" in upd) syncShiftDayHours(data, sh);
+        }
         data.shifts.sort((a, b) => new Date(a.start) - new Date(b.start));
         return true;
       }
       case "deleteShift": {
+        // Batch 29 (ShiftLedger.removing): manual rows are deleted; UKG rows
+        // are tombstoned (isRemoved) so the next ICS pull can't bring them
+        // back. op.hard = a real delete (ICS dropped an untouched future row).
         if (!Array.isArray(data.shifts)) return true;
-        data.shifts = data.shifts.filter(s => s.id !== op.shiftId);
+        const sh = data.shifts.find(s => s.id === op.shiftId);
+        if (!sh) return true;
+        if (sh.isManual || op.hard) data.shifts = data.shifts.filter(s => s.id !== op.shiftId);
+        else { sh.isRemoved = true; sh.ukgIdentifier = sh.ukgIdentifier || sh.id; }
+        syncShiftDayHours(data, sh);
+        return true;
+      }
+      case "restoreShift": {
+        if (!Array.isArray(data.shifts)) return true;
+        const sh = data.shifts.find(s => s.id === op.shiftId);
+        if (sh) { sh.isRemoved = false; syncShiftDayHours(data, sh); }
         return true;
       }
       case "updateProfile": {
@@ -747,7 +795,7 @@ const SyncEngine = (() => {
             if (!brand) {
               const pkey = String(l.product || "").replace(/^[ \t]+|[ \t]+$/g, "").toLowerCase();
               const corr = corrections.find(c => String(c.productKey || "").toLowerCase() === pkey);
-              if (corr && corr.brand) brand = corr.brand;
+              if (corr && corr.brand) brand = corr.brand; // normalizeLine folds to resolvedBrand: normalizeLine folds aliases
             }
             return normalizeLine({
               product: l.product, brand,
@@ -790,7 +838,7 @@ const SyncEngine = (() => {
             for (const l of (t.lines || [])) {
               if (!trimWS(l.brand || "") && pkey(l.product) === key) {
                 if (!productName) productName = String(l.product || "");
-                l.brand = brand;
+                l.brand = (typeof BrandAliases !== "undefined") ? BrandAliases.canonical(brand) : brand; // resolvedBrand
                 changed = true;
               }
             }
@@ -864,7 +912,7 @@ const SyncEngine = (() => {
     return {
       ...(l.id ? { id: l.id } : {}),
       product: String(l.product || "Item"),
-      brand: l.brand || "",
+      brand: (typeof BrandAliases !== "undefined") ? BrandAliases.canonical(l.brand || "") : (l.brand || ""),
       ...(l.sku ? { sku: String(l.sku) } : {}),
       unitPrice: Number(l.unitPrice) || 0,
       quantity: Math.max(1, parseInt(l.quantity, 10) || 1),
@@ -933,7 +981,7 @@ const SyncEngine = (() => {
       }
     }
     if (mine === undefined) { st.conflicts++; return clone(theirs); }   // we deleted, phone edited: keep phone
-    if (theirs === undefined) { st.conflicts++; return undefined; }     // phone deleted, we edited: stays deleted
+    if (theirs === undefined) return clone(mine);                       // phone deleted, we edited: keep our edit (iOS BackupMerge rule)
     st.conflicts++;
     return clone(theirs);                                                 // same field changed on both: phone wins
   }
@@ -955,7 +1003,7 @@ const SyncEngine = (() => {
       const k = keyOf(m);
       if (T.has(k)) continue;
       if (!B.has(k)) out.push(clone(m));       // we added it
-      else if (!deepEq(m, B.get(k))) st.conflicts++;  // phone deleted, we edited: stays deleted
+      else if (!deepEq(m, B.get(k))) out.push(clone(m));  // phone deleted, we edited: keep the edited record (iOS rule)
     }
     return out.filter(x => x !== undefined);
   }
@@ -993,7 +1041,7 @@ const SyncEngine = (() => {
         const tid = op.ticketId;
         return inArray("tickets", t => String(t.id) === String(tid), "ticket", op.dayId + "#" + tid, findDay);
       }
-      case "updateDay": case "setDayNote": case "clearDayTickets":
+      case "updateDay": case "setDayNote": case "clearDayTickets": case "setGear":
         return inArray("days", d => d.id === op.dayId, "day", op.dayId);
       case "pasteSalesReport": {
         // Legacy snapshot check: only the pasted tickets are ours.
@@ -1016,7 +1064,7 @@ const SyncEngine = (() => {
         const entry = () => { const h = findJournalHost(); return Array.isArray(h) ? h.find(journalPred) : (h ? h[op.date] : undefined); };
         return inArray("stories", x => x.id === op.storyID, "story", op.date + "#" + op.storyID, entry);
       }
-      case "updateShift": case "deleteShift":
+      case "updateShift": case "deleteShift": case "restoreShift":
         return inArray("shifts", x => x.id === op.shiftId, "shift", op.shiftId);
       case "updateContact": case "deleteContact": case "addShiftNote":
         return inArray("contacts", x => String(x.id || x.contactId || x.name) === String(op.contactId), "contact", op.contactId);
@@ -1080,12 +1128,16 @@ const SyncEngine = (() => {
       if (!el) {
         el = document.createElement("div");
         el.id = "sync-conflict-note";
-        el.style.cssText = "position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:9999;" +
-          "padding:10px 18px;border-radius:10px;font-size:14px;color:#fff;background:rgba(20,20,22,.92);" +
-          "box-shadow:0 4px 18px rgba(0,0,0,.3);max-width:90vw;text-align:center;";
+        el.setAttribute("role", "status");
+        el.style.cssText = "position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;gap:12px;align-items:center;" +
+          "padding:10px 14px 10px 18px;border-radius:12px;font-size:14px;color:var(--text-primary);background:var(--surface-high);border:var(--field-border);" +
+          "box-shadow:0 4px 18px rgba(0,0,0,.3);max-width:90vw;";
         document.body.appendChild(el);
       }
-      el.textContent = "Some offline changes were skipped because they were changed on your phone.";
+      // Cancellable banner (Batch 20): it can be dismissed right away.
+      el.innerHTML = '<span>Some offline changes were merged with edits from your phone. Where you both changed the same thing, the phone\'s version was kept.</span>' +
+        '<button class="btn ghost sm" type="button" aria-label="Dismiss">Dismiss</button>';
+      el.querySelector("button").onclick = () => { el.style.display = "none"; };
       el.style.display = "block";
       clearTimeout(notifySkipped._t);
       notifySkipped._t = setTimeout(() => { el.style.display = "none"; }, 7000);
@@ -1138,7 +1190,7 @@ const SyncEngine = (() => {
 
   // Push all queued ops: fetch the newest blob, rebase every queued op onto
   // it (replayOp), then write with optimistic concurrency (only if nobody
-  // wrote since our fetch). A race -> refetch, rebase again (up to 5 tries).
+  // wrote since our fetch). A race -> refetch, rebase again (up to 4 tries, as iOS).
   var pushing = null;
   async function processWriteQueue() {
     if (pushing) return pushing;
@@ -1147,7 +1199,7 @@ const SyncEngine = (() => {
       const queued = await MBDB.getWriteQueue().catch(() => []);
       if (!queued.length) return { pushed: 0 };
       let lastErr = null;
-      for (let attempt = 0; attempt < 5; attempt++) {
+      for (let attempt = 0; attempt < 4; attempt++) {   // 4 attempts, same as iOS BackupUploader.maxAttempts
         const { data, updated_at } = await SB.getBackup();
         if (!data && updated_at === null && attempt === 0 && !queued.length) return { pushed: 0 };
         const backup = { data: data || {}, updated_at, cachedAt: Date.now() };

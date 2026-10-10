@@ -10,12 +10,12 @@
  */
 "use strict";
 
-const VERSION = "2.0.10";
+const VERSION = "2.0.11";
 const SHELL_CACHE = "mb-shell-" + VERSION;
 
 const SHELL_ASSETS = [
   "/", "/manifest.json", "/themes.css", "/components.css",
-  "/icons.js", "/db.js", "/sb.js", "/sync.js", "/payengine.js", "/daydetail.js",
+  "/icons.js", "/db.js", "/sb.js", "/sync.js", "/brandaliases.js", "/shiftmath.js", "/payengine.js", "/daydetail.js",
   "/stats.js", "/badges.js", "/sales.js", "/sale-entry.js", "/schedule.js", "/journal.js",
   "/coworkers.js", "/goals.js", "/microcharm.js", "/profile.js",
   "/leaderboard.js", "/brands.js", "/home-widgets.js", "/qrcode.min.js",

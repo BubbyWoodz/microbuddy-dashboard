@@ -130,8 +130,8 @@ const DayDetailUI = (() => {
     if (breaks === 2 && day.secondLunchStart) text += " & " + fmtTimeOnly(day.secondLunchStart);
     return text;
   }
-  function autoLunchMinutes(scheduledHours) { // WorkDay.autoLunchMinutes
-    return scheduledHours < 5 ? 0 : (scheduledHours >= 11 ? 90 : 60);
+  function autoLunchMinutes(scheduledHours) { // LunchPolicy.minutes (profile default unless shift length overrides)
+    return PayEngine.lunchMinutesFor(scheduledHours, PayEngine.profileLunchDefault(ctx && ctx.profile));
   }
 
   // ---------------------------------------------------------------------------
@@ -239,7 +239,7 @@ const DayDetailUI = (() => {
       day,
       data,
       profile: data.profile || {},
-      shifts: data.shifts || [],
+      shifts: (data.shifts || []).filter(s => s && !s.isRemoved),
       holidayDates: data.holidayDates || [],
       table: PayEngine.tableForProfile(data.profile || {}),
       highlightTicketId: null,
@@ -387,6 +387,7 @@ const DayDetailUI = (() => {
           </span>
           <span style="color:var(--muted)">${Icon("edit", { size: 14 })}</span>
         </button>
+        ${isOff && !day.ekeyNumber && !day.walkieNumber ? "" : `<div class="dd-gear">${GearUI.html(ctx.dayKey, day)}</div>`}
       </div>`;
   }
 
@@ -483,7 +484,7 @@ const DayDetailUI = (() => {
   function topOffCardHTML(pay) {
     let periodTopUp = 0, periodLabel = "";
     try {
-      const period = PayEngine.payPeriodContaining(ctx.dayKey);
+      const period = PayEngine.payPeriodBlock(ctx.dayKey);
       periodLabel = PayEngine.periodLabel(period);
       const { summary } = PayEngine.calculatePeriodPay(
         period, ctx.data.days || [], ctx.shifts, ctx.profile, ctx.holidayDates);
@@ -731,6 +732,7 @@ const DayDetailUI = (() => {
 
     const hb = q("#dd-hours-btn");
     if (hb) hb.addEventListener("click", openHoursSheet);
+    GearUI.bind(overlay);
 
     qa("[data-line-edit]").forEach(b => b.addEventListener("click", () => {
       const [ti, li] = b.dataset.lineEdit.split(":").map(Number);

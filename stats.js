@@ -178,52 +178,12 @@ const StatsUI = (() => {
       Math.abs(b - winLo) < Math.abs(a - winLo) ? b : a);
   }
 
-  function overlapHours(shift, coworker) {
-    const start = parseShiftDate(shift.start);
-    const end = parseShiftDate(shift.end);
-    if (!start || !end) return null;
-    const userStart = shiftMinutes(start);
-    let userEnd = shiftMinutes(end);
-    if (userEnd <= userStart) userEnd += 1440;
-    const startValue = timeParseMinutes(coworker.start);
-    const endValue = timeParseMinutes(coworker.end);
-    if (startValue == null && endValue == null) return null;
-    let cwStart = startValue != null ? reading(startValue, userStart, userEnd) : userStart;
-    let cwEnd = endValue != null ? reading(endValue, userStart, userEnd + 60) : userEnd;
-    if (cwEnd < cwStart) cwEnd += 1440;
-    const overlap = Math.min(userEnd, cwEnd) - Math.max(userStart, cwStart);
-    return Math.max(0, overlap) / 60;
-  }
-
-  function shiftHours(shift) {
-    const start = parseShiftDate(shift.start);
-    const end = parseShiftDate(shift.end);
-    if (!start || !end) return 0;
-    return Math.max(0, (end - start) / 3600000);
-  }
-
-  function isExactShift(shift, coworker) {
-    const startMin = timeParseMinutes(coworker.start);
-    const endMin = timeParseMinutes(coworker.end);
-    if (startMin == null || endMin == null) return false;
-    const start = parseShiftDate(shift.start);
-    const end = parseShiftDate(shift.end);
-    if (!start || !end) return false;
-    return Math.abs(startMin - shiftMinutes(start)) <= 2 &&
-           Math.abs(endMin - shiftMinutes(end)) <= 2;
-  }
-
-  function closesWith(shift, coworker) {
-    const endMin = timeParseMinutes(coworker.end);
-    if (endMin == null) return false;
-    const end = parseShiftDate(shift.end);
-    if (!end) return false;
-    const userEnd = shiftMinutes(end);
-    const candidates = [endMin, endMin + 720, endMin - 720, endMin + 1440];
-    const best = candidates.reduce((a, b) =>
-      Math.abs(b - userEnd) < Math.abs(a - userEnd) ? b : a);
-    return Math.abs(best - userEnd) <= 60;
-  }
+  // Shift math lives in shiftmath.js (exact iOS Shift.swift port: worked
+  // hours, meridiem-aware resolvedBounds, removal tombstones).
+  const overlapHours = (shift, cw) => ShiftMath.overlapHours(shift, cw);
+  const shiftHours = shift => ShiftMath.hours(shift);
+  const isExactShift = (shift, cw) => ShiftMath.isExactShift(shift, cw);
+  const closesWith = (shift, cw) => ShiftMath.closesWith(shift, cw);
 
   function hoursText(hours) {
     const totalMinutes = Math.round(hours * 60);
@@ -250,12 +210,13 @@ const StatsUI = (() => {
   }
 
   function dayItemsSold(day) {
-    return allLines(day).reduce((s, l) => s + (l.isReturn ? 0 : (l.quantity || 0)), 0);
+    // SaleTicket.itemCount: returns, exchanges and service plans excluded.
+    return allLines(day).reduce((s, l) => s + ((l.isReturn || l.isExchange || l.kind === "servicePlan") ? 0 : (l.quantity || 0)), 0);
   }
 
   function dayPlansSold(day) {
     return allLines(day).reduce((s, l) =>
-      s + ((!l.isReturn && l.kind === "servicePlan") ? (l.quantity || 0) : 0), 0);
+      s + ((!l.isReturn && !l.isExchange && l.kind === "servicePlan") ? (l.quantity || 0) : 0), 0);
   }
 
   function dayPlansRevenue(day) {
@@ -302,7 +263,9 @@ const StatsUI = (() => {
       for (const line of allLines(day)) {
         if (line.isReturn) continue;
         const raw = String(line[by] || "").trim();
-        const key = raw ? raw : "Unlabeled";
+        // Brand rankings fold product lines into the parent (iOS StatsEngine.rankingKey).
+        const folded = (by === "brand" && raw && typeof BrandAliases !== "undefined") ? BrandAliases.canonical(raw) : raw;
+        const key = folded ? folded : "Unlabeled";
         const e = totals[key] || { revenue: 0, count: 0 };
         e.revenue += PayEngine.lineRevenue(line);
         e.count += line.quantity || 0;
@@ -535,6 +498,7 @@ const StatsUI = (() => {
     const cs = customStart ? parseKey(customStart) : null;
     const ce = customEnd ? parseKey(customEnd) : null;
     const filtered = (shifts || []).filter(shift => {
+      if (shift.isRemoved) return false; // removal tombstone
       const start = parseShiftDate(shift.start);
       if (!start) return false;
       if (!rangeContains(range, start, customStart, customEnd)) return false;
@@ -549,20 +513,28 @@ const StatsUI = (() => {
       return true;
     });
 
-    // Names merge case-insensitively.
+    // Port of CrewStats.stats (Batch 31): the private schedule vault gives
+    // real overlap hours. A vault row with times is the schedule of record
+    // for that person+day, so the hand-added list can't double count it.
+    const vault = (state.data && state.data.vault) || [];
+    const vaultHits = ShiftMath.vaultOverlaps(vault, filtered);
+    const timedVaultDays = ShiftMath.vaultTimedKeys(vault, filtered);
+    const newStat = name => ({
+      name, partnerShifts: 0, briefShifts: 0, overlapHours: 0, briefOverlapHours: 0,
+      exactShifts: 0, closingShifts: 0, dayKeys: {},
+    });
     const buckets = {};
     for (const shift of filtered) {
       const hrs = shiftHours(shift);
+      const dk = ShiftMath.shiftDayKey(shift);
       for (const member of (shift.coworkers || [])) {
-        const rawName = String(member.name || member || "").trim();
+        const mObj = typeof member === "string" ? { name: member } : member;
+        const rawName = String(mObj.name || "").trim();
         if (!rawName) continue;
-        const key = rawName.toLowerCase();
-        const stat = buckets[key] || {
-          name: rawName, partnerShifts: 0, briefShifts: 0,
-          overlapHours: 0, briefOverlapHours: 0,
-          exactShifts: 0, closingShifts: 0, dayKeys: {},
-        };
-        const overlap = overlapHours(shift, typeof member === "string" ? { name: member } : member);
+        const key = ShiftMath.identity(rawName);
+        if (timedVaultDays.has(key + "|" + dk)) continue;
+        const stat = buckets[key] || newStat(ShiftMath.displayName(rawName) || rawName);
+        const overlap = overlapHours(shift, mObj);
         // Under half your shift alongside them = brief, never a partner stat.
         // Unknown hours still count as partners.
         const isBrief = overlap != null && hrs > 0 && overlap < hrs * 0.5;
@@ -572,14 +544,23 @@ const StatsUI = (() => {
         } else {
           stat.partnerShifts += 1;
           if (overlap != null) stat.overlapHours += overlap;
-          const mObj = typeof member === "string" ? { name: member } : member;
           if (isExactShift(shift, mObj)) stat.exactShifts += 1;
           if (closesWith(shift, mObj)) stat.closingShifts += 1;
-          const dk = PayEngine.dayKey(shift.start);
           if (dk) stat.dayKeys[dk] = true;
         }
         buckets[key] = stat;
       }
+    }
+    for (const hit of vaultHits) {
+      const stat = buckets[hit.identity] || newStat(hit.name);
+      if (stat.name.split(" ").length < hit.name.split(" ").length) stat.name = hit.name;
+      // Vault overlap always counts, even twenty minutes.
+      stat.partnerShifts += 1;
+      stat.overlapHours += hit.hours;
+      if (isExactShift(hit.shift, hit.coworker)) stat.exactShifts += 1;
+      if (closesWith(hit.shift, hit.coworker)) stat.closingShifts += 1;
+      stat.dayKeys[hit.dateKey] = true;
+      buckets[hit.identity] = stat;
     }
     const list = Object.values(buckets);
     if (!list.length) return [];
@@ -589,6 +570,7 @@ const StatsUI = (() => {
 
     for (const stat of list) {
       const keys = Object.keys(stat.dayKeys);
+      stat.dayKeyList = keys;
       const sharedDays = keys.map(k => daysByID[k]).filter(Boolean);
       stat.loggedDaysCount = sharedDays.length;
       stat.avgRevenue = 0;
@@ -654,9 +636,10 @@ const StatsUI = (() => {
     const data = (backup && backup.data) || {};
     const profile = data.profile || {};
     const table = PayEngine.tableForProfile(profile);
-    const shifts = data.shifts || [];
+    const shifts = (data.shifts || []).filter(s => s && !s.isRemoved);
     const premiumByDay = PayEngine.premiumsByDay(shifts, data.holidayDates || []);
-    state.data = { days: data.days || [], shifts, profile, table, premiumByDay };
+    state.data = { days: data.days || [], shifts, profile, table, premiumByDay,
+      vault: Array.isArray(data.scheduleVault) ? data.scheduleVault : [] };
   }
 
   function spinnerHTML(msg) { return `<div class="spinner">${esc(msg || "Loading stats…")}</div>`; }
@@ -913,13 +896,32 @@ const StatsUI = (() => {
 
   function crewSuperCard(title, icon, tint, stat) {
     return `<div class="panel col-4"><div class="label" style="color:${tint}">${I(icon, { size: 14 })} ${esc(title)}</div>` +
-      `<div class="hero-num md" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(stat.name)}</div>` +
-      `<div class="caption">${stat.partnerShifts} shift${stat.partnerShifts === 1 ? "" : "s"} · ${hoursText(stat.overlapHours)}</div></div>`;
+      `<div class="hero-num md" style="overflow-wrap:anywhere">${esc(stat.name)}</div>` +
+      `<div class="caption">${esc(superDetail(stat))}</div></div>`;
+  }
+
+  /// CrewStats.overlapCaption: "1h on Tue" for a single shared day, else "8h together".
+  // CrewStatsView.superDetail
+  function superDetail(stat) {
+    const caption = overlapCaption(stat);
+    if (Object.keys(stat.dayKeys || {}).length === 1 && caption) return caption;
+    const shifts = stat.partnerShifts + " shift" + (stat.partnerShifts === 1 ? "" : "s");
+    return caption ? shifts + " · " + caption : shifts;
+  }
+  function overlapCaption(stat) {
+    if (!(stat.overlapHours > 0)) return "";
+    const h = hoursText(stat.overlapHours);
+    const keys = stat.dayKeyList || [];
+    if (keys.length === 1) {
+      const d = new Date(keys[0] + "T12:00:00");
+      if (!isNaN(d)) return h + " on " + d.toLocaleDateString("en-US", { weekday: "short" });
+    }
+    return h + " together";
   }
 
   function crewRowHTML(stat, rank) {
     const parts = [];
-    if (stat.overlapHours >= 0.1) parts.push(`${hoursText(stat.overlapHours)} together`);
+    if (stat.overlapHours > 0) parts.push(overlapCaption(stat));
     if (stat.exactShifts > 0) parts.push(`same hours ${stat.exactShifts}×`);
     if (stat.closingShifts > 0) parts.push(`closed together ${stat.closingShifts}×`);
     if (stat.loggedDaysCount > 0) parts.push(`avg ${money(stat.avgRevenue)} sold`);

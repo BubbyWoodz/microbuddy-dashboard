@@ -132,7 +132,7 @@ const CoworkersUI = (() => {
     const backup = await SyncEngine.getLocalBackup();
     const data = (backup && backup.data) || {};
     const raw = Array.isArray(data.contacts) ? data.contacts : (data.contacts ? Object.values(data.contacts) : []);
-    cache = { contacts: raw.filter(x => x && typeof x === "object").map(normalizeContact), shifts: Array.isArray(data.shifts) ? data.shifts : [], loaded: true };
+    cache = { contacts: raw.filter(x => x && typeof x === "object").map(normalizeContact), shifts: (Array.isArray(data.shifts) ? data.shifts : []).filter(s => s && !s.isRemoved), loaded: true };
     return cache;
   }
   async function getContacts() { return (await loadAll()).contacts; }
@@ -513,7 +513,7 @@ const CoworkersUI = (() => {
     const now = Date.now();
     const past = list.filter(s => Date.parse(s.start) <= now), next = list.find(s => Date.parse(s.start) > now);
     const last = past[past.length - 1];
-    const hours = past.reduce((h, s) => h + Math.max(0, (Date.parse(s.end) - Date.parse(s.start)) / 3600000), 0);
+    const hours = past.reduce((h, s) => h + Math.max(0, (Date.parse(s.actualEnd || s.end) - Date.parse(s.actualStart || s.start)) / 3600000), 0);
     const day = s => fmtDate(s.start, { weekday: "short", month: "short", day: "numeric" });
     return cardHTML("On the schedule together", "From your synced shifts",
       '<div class="cw-together">' +
@@ -1073,17 +1073,18 @@ const CoworkersUI = (() => {
       s + (t.lines || []).reduce((x, l) => x + PayEngine.lineRevenue(l), 0), 0);
     const commission = (tickets || []).reduce((s, t) =>
       s + PayEngine.ticketCommission(t, table), 0);
+    // Same exchange rules as the day's own stats (Batch 15, ComparisonSide.capture).
     const items = (tickets || []).reduce((s, t) =>
-      s + (t.lines || []).reduce((x, l) => x + (l.isReturn ? 0 : (l.quantity || 0)), 0), 0);
+      s + (t.lines || []).reduce((x, l) => x + ((l.isReturn || l.isExchange || l.kind === "servicePlan") ? 0 : (l.quantity || 0)), 0), 0);
     const plans = lines
-      .filter(l => l.kind === "servicePlan" && !l.isReturn)
+      .filter(l => l.kind === "servicePlan" && !l.isReturn && !l.isExchange)
       .reduce((s, l) => s + (l.quantity || 0), 0);
     const topProducts = Object.entries(revenueByProduct)
       .sort((a, b) => b[1] - a[1]).slice(0, 3)
       .map(([name, rev]) => name + " — " + fmtMoney(rev));
     return {
       revenue, commission, items, plans,
-      customers: (tickets || []).length,
+      customers: (tickets || []).filter(t => !(t.lines || []).some(l => l.isExchange)).length,
       hours: hours != null ? hours : null,
       topProducts,
     };
@@ -1119,7 +1120,7 @@ const CoworkersUI = (() => {
   function shiftHours(sh) {
     if (sh.hours != null) return sh.hours;
     if (sh.start && sh.end) {
-      const ms = new Date(sh.end) - new Date(sh.start);
+      const ms = new Date(sh.actualEnd || sh.end) - new Date(sh.actualStart || sh.start);
       return ms > 0 ? ms / 3600000 : 0;
     }
     return 0;

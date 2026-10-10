@@ -14,7 +14,7 @@ WORKDIR /app
 COPY microbuddy.py dashboard.html manifest.json sw.js themes.css components.css ./
 COPY badges.js brands.js buddy.js buddy-actions.js coworkers.js daydetail.js db.js heic2any.min.js \
      goals.js home-widgets.js icons.js journal.js leaderboard.js microcharm.js \
-     payengine.js profile.js qrcode.min.js sales.js sale-entry.js sb.js schedule.js \
+     brandaliases.js shiftmath.js payengine.js profile.js qrcode.min.js sales.js sale-entry.js sb.js schedule.js \
      screen-lock.js settings.js stats.js sync.js \
      login-bg.jpg ./
 COPY icons/ ./icons/
