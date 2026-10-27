@@ -1228,3 +1228,57 @@ a.cw-info-link .cw-info-value { color: var(--accent); }
 .tile .c, .tile .big, .rank .name, .home-greet .name, .wc-meta, .crew-name, .cu-crew, .sr-sub,
 .dd-line .p, .mc-rowsub, .session-title, .lb-name, .lb-sub { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
 .tile .v { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+
+
+/* ---- Professional: flat bordered cards, quiet chrome (tokens do most of the work) ---- */
+[data-theme="professional_light"] .panel,
+[data-theme="professional_dark"] .panel,
+[data-theme="professional_light"] .dd-card,
+[data-theme="professional_dark"] .dd-card,
+[data-theme="professional_light"] .day-card,
+[data-theme="professional_dark"] .day-card,
+[data-theme="professional_light"] .tile,
+[data-theme="professional_dark"] .tile,
+[data-theme="professional_light"] .quick-stat,
+[data-theme="professional_dark"] .quick-stat {
+  box-shadow: none;
+}
+[data-theme="professional_light"] .panel.clickable:hover,
+[data-theme="professional_dark"] .panel.clickable:hover,
+[data-theme="professional_light"] .day-card:hover,
+[data-theme="professional_dark"] .day-card:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--accent);
+}
+[data-theme="professional_light"] .btn.primary,
+[data-theme="professional_dark"] .btn.primary {
+  box-shadow: none;
+}
+[data-theme="professional_light"] .chip.filled,
+[data-theme="professional_dark"] .chip.filled {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+[data-theme="professional_light"] .bar > i,
+[data-theme="professional_dark"] .bar > i {
+  border-radius: 3px;
+}
+[data-theme="professional_light"] .theme-swatch,
+[data-theme="professional_dark"] .theme-swatch {
+  border-radius: 8px;
+}
+[data-theme="professional_light"] .theme-card,
+[data-theme="professional_dark"] .theme-card {
+  border-radius: 10px;
+}
+[data-theme="professional_light"] .theme-card.selected,
+[data-theme="professional_dark"] .theme-card.selected {
+  box-shadow: 0 0 0 2px var(--accent-subtle), 0 0 0 3px var(--accent);
+}
+[data-theme="professional_light"] .sec-title,
+[data-theme="professional_dark"] .sec-title {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+}

@@ -1,7 +1,8 @@
 /* ============ themes.css — Micro Buddy design tokens (one theme system) ============
  * Exact ports of the iOS Theme.swift / ThemeMetrics.swift palettes.
- * <html data-theme="light|dark|terminal|modern|win95"> ("auto" resolves to
- * light/dark in sync.js; legacy "frosted" is normalized to "modern").
+ * <html data-theme="light|dark|terminal|modern|win95|professional_light|professional_dark">
+ * ("auto" / "professional_auto" resolve to light/dark variants in sync.js;
+ * legacy "frosted" is normalized to "modern").
  *
  * Semantic tokens (use these):
  *   --canvas --canvas-deep --surface --surface-high --card-top
@@ -346,6 +347,184 @@
   --bar-fill: repeating-linear-gradient(90deg, #000080 0 10px, transparent 10px 12px);
   --shadow-pop: 2px 2px 0 #000;
   --overlay: rgba(0, 0, 0, 0.25);
+}
+
+
+/* Professional family — exact ports of iOS Theme.swift Professional tokens.
+ * Phone ids: professional_auto | professional_light | professional_dark.
+ * professional_auto resolves in sync.js to light/dark via prefers-color-scheme.
+ * Flat canvas, one navy accent (#0B4F9C / #6AA1E8), 10/8/4 corners, no glow.
+ */
+[data-theme="professional_light"] {
+  color-scheme: light;
+  --canvas: #F4F5F7;
+  --canvas-deep: #F4F5F7;
+  --surface: #FFFFFF;
+  --surface-high: #EEF0F3;
+  --card-top: #FFFFFF;
+  --navy: #0B4F9C;
+  --navy-bright: #0B4F9C;
+  --accent: #0B4F9C;
+  --money: #0B7A4B;
+  --money-text: #0B7A4B;
+  --amber: #0B4F9C;
+  --gray: #737D8C;
+  --red: #B42318;
+  --text-primary: #0E1A2B;
+  --text-secondary: #5A6575;
+  --text-tertiary: #737D8C;
+  --text-on-canvas: var(--text-primary);
+  --text-on-canvas-2: var(--text-secondary);
+  --hairline: #E3E6EA;
+  --separator: #ECEEF1;
+  --accent-subtle: #E7EEF7;
+  --bar-rest: #C9D3E0;
+  --on-accent: #FFFFFF;
+
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Inter, Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --font-num: var(--font-display);
+  --label-transform: none;
+  --label-spacing: 0;
+  --title-prefix: "";
+
+  --radius: 10px;
+  --radius-md: 8px;
+  --radius-sm: 4px;
+  --chip-radius: 4px;
+  --bar-h: 6px;
+  --gap: 12px;
+
+  --page-bg: var(--canvas);
+  --panel-bg: var(--surface);
+  --panel-border: 1px solid var(--hairline);
+  --panel-shadow: none;
+  --panel-radius: 10px;
+  --panel-blur: none;
+  --tile-bg: var(--surface);
+  --tile-border: 1px solid var(--hairline);
+
+  --btn-bg: var(--surface);
+  --btn-fg: var(--accent);
+  --btn-border: 1px solid var(--hairline);
+  --btn-primary-bg: var(--accent);
+  --btn-primary-fg: var(--on-accent);
+  --btn-primary-border: 1px solid transparent;
+  --btn-tint-bg: var(--accent-subtle);
+  --btn-tint-fg: var(--accent);
+  --btn-radius: 8px;
+  --btn-shadow: none;
+
+  --field-bg: var(--surface);
+  --field-border: 1px solid var(--hairline);
+  --field-radius: 8px;
+
+  --seg-track: var(--surface-high);
+  --seg-fg: var(--text-secondary);
+  --seg-active-bg: var(--surface);
+  --seg-active-fg: var(--text-primary);
+  --seg-radius: 6px;
+  --seg-active-shadow: 0 0 0 1px var(--hairline);
+
+  --nav-bg: var(--surface);
+  --nav-border: 1px solid var(--hairline);
+  --nav-fg: var(--text-tertiary);
+  --nav-active-bg: var(--accent-subtle);
+  --nav-active-fg: var(--accent);
+  --header-bg: var(--canvas);
+
+  --chip-bg: var(--accent-subtle);
+  --bar-track: var(--hairline);
+  --bar-fill: var(--accent);
+  --shadow-pop: 0 8px 24px rgba(14, 26, 43, 0.08);
+  --overlay: rgba(14, 26, 43, 0.35);
+}
+
+[data-theme="professional_dark"] {
+  color-scheme: dark;
+  --canvas: #0A1120;
+  --canvas-deep: #0A1120;
+  --surface: #111A2C;
+  --surface-high: #18233A;
+  --card-top: #111A2C;
+  --navy: #1F4F8C;
+  --navy-bright: #6AA1E8;
+  --accent: #6AA1E8;
+  --money: #3DBE8B;
+  --money-text: #3DBE8B;
+  --amber: #6AA1E8;
+  --gray: #7D8A9E;
+  --red: #F2766B;
+  --text-primary: #E7ECF3;
+  --text-secondary: #9BA7B9;
+  --text-tertiary: #7D8A9E;
+  --text-on-canvas: var(--text-primary);
+  --text-on-canvas-2: var(--text-secondary);
+  --hairline: #223050;
+  --separator: #1B2740;
+  --accent-subtle: #16294A;
+  --bar-rest: #2A3B5C;
+  --on-accent: #0A1120;
+
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Inter, Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --font-num: var(--font-display);
+  --label-transform: none;
+  --label-spacing: 0;
+  --title-prefix: "";
+
+  --radius: 10px;
+  --radius-md: 8px;
+  --radius-sm: 4px;
+  --chip-radius: 4px;
+  --bar-h: 6px;
+  --gap: 12px;
+
+  --page-bg: var(--canvas);
+  --panel-bg: var(--surface);
+  --panel-border: 1px solid var(--hairline);
+  --panel-shadow: none;
+  --panel-radius: 10px;
+  --panel-blur: none;
+  --tile-bg: var(--surface);
+  --tile-border: 1px solid var(--hairline);
+
+  --btn-bg: var(--surface);
+  --btn-fg: var(--accent);
+  --btn-border: 1px solid var(--hairline);
+  --btn-primary-bg: var(--accent);
+  --btn-primary-fg: var(--on-accent);
+  --btn-primary-border: 1px solid transparent;
+  --btn-tint-bg: var(--accent-subtle);
+  --btn-tint-fg: var(--accent);
+  --btn-radius: 8px;
+  --btn-shadow: none;
+
+  --field-bg: var(--surface);
+  --field-border: 1px solid var(--hairline);
+  --field-radius: 8px;
+
+  --seg-track: var(--surface-high);
+  --seg-fg: var(--text-secondary);
+  --seg-active-bg: var(--surface);
+  --seg-active-fg: var(--text-primary);
+  --seg-radius: 6px;
+  --seg-active-shadow: 0 0 0 1px var(--hairline);
+
+  --nav-bg: var(--surface);
+  --nav-border: 1px solid var(--hairline);
+  --nav-fg: var(--text-tertiary);
+  --nav-active-bg: var(--accent-subtle);
+  --nav-active-fg: var(--accent);
+  --header-bg: var(--canvas);
+
+  --chip-bg: var(--accent-subtle);
+  --bar-track: var(--hairline);
+  --bar-fill: var(--accent);
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --overlay: rgba(4, 7, 14, 0.62);
 }
 
 /* ---- Legacy aliases: older modules keep working on the same palette ---- */

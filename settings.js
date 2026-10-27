@@ -10,8 +10,18 @@
  * This dashboard: screen lock, offline cache, chat history, sign out.
  */
 const SettingsUI = (() => {
-  // Exact titles/subtitles from ThemePreference.swift.
-  const THEMES = [
+  // Exact titles/subtitles from ThemePreference.swift / ThemeCatalog.
+  // Professional sits at the top (featured). ARCHIVED mirrors the iPhone
+  // ThemeCatalog.archived list — empty for now, so the Archived section stays hidden.
+  const PROFESSIONAL = [
+    { id: "professional_auto", name: "Professional Auto", desc: "Clean and flat, follows your computer",
+      swatch: "linear-gradient(135deg,#F4F5F7 0 50%,#0A1120 50% 100%)", badge: "New" },
+    { id: "professional_light", name: "Professional Light", desc: "White and navy",
+      swatch: "linear-gradient(160deg,#FFFFFF,#F4F5F7)", badge: "New" },
+    { id: "professional_dark", name: "Professional Dark", desc: "Navy",
+      swatch: "linear-gradient(160deg,#111A2C,#0A1120)", badge: "New" },
+  ];
+  const MAIN = [
     { id: "auto", name: "Auto", desc: "Follows your computer's Light or Dark Mode",
       swatch: "linear-gradient(135deg,#f2f2f7 0 50%,#0b1220 50% 100%)" },
     { id: "light", name: "Light", desc: "Always the bright look",
@@ -25,6 +35,9 @@ const SettingsUI = (() => {
     { id: "win95", name: "Windows 95", desc: "Teal desktop, beveled silver chrome",
       swatch: "linear-gradient(180deg,#000080 0 22%,#c0c0c0 22% 100%)" },
   ];
+  // Mirror ThemeCatalog.archived. Empty = no Archived section.
+  const ARCHIVED = [];
+  const THEMES = PROFESSIONAL.concat(MAIN, ARCHIVED);
   const TITLE = Object.fromEntries(THEMES.map(t => [t.id, t.name]));
   const I = (n, o) => (typeof Icon === "function" ? Icon(n, o) : "");
 
@@ -43,6 +56,19 @@ const SettingsUI = (() => {
         ? `Your phone hasn't shared its theme yet, so Auto is used (matches your computer's Light or Dark Mode).`
         : `Using the pick below on this dashboard.`;
     }
+    function themeCard(t) {
+      const sel = t.id === st.effective;
+      const badge = t.badge ? `<span class="chip filled" style="margin-left:6px;font-size:11px">${esc(t.badge)}</span>` : "";
+      return `<button class="theme-card${sel ? " selected" : ""}" data-theme-id="${t.id}"${follow ? " disabled" : ""}>` +
+        `<span class="theme-swatch" style="background:${t.swatch}"></span>` +
+        `<span class="theme-name">${esc(t.name)}${badge}${sel ? " " + I("check-circle", { size: 16, cls: "ico accent" }) : ""}</span>` +
+        `<span class="theme-desc">${esc(t.desc)}</span></button>`;
+    }
+    const archivedPanel = ARCHIVED.length
+      ? (`<div class="panel" style="margin-top:16px"><div class="sec-head"><div class="grow"><div class="sec-title">Archived</div>` +
+         `<div class="sec-sub">Older themes that stay fully usable</div></div></div>` +
+         `<div class="theme-grid">` + ARCHIVED.map(themeCard).join("") + `</div></div>`)
+      : "";
     box.innerHTML =
       `<div class="panel"><div class="settings-row static">` +
       `<span class="sr-ico">${I("phone")}</span><span class="sr-text"><span class="sr-title">Match my phone</span>` +
@@ -51,14 +77,9 @@ const SettingsUI = (() => {
       `<div class="hint" id="theme-status">${status}</div></div>` +
       `<div class="panel"><div class="sec-head"><div class="grow"><div class="sec-title">Theme</div>` +
       `<div class="sec-sub">Pick how Micro Buddy looks${follow ? " — turn off Match my phone to choose your own" : ""}</div></div></div>` +
-      `<div class="theme-grid">` + THEMES.map(t => {
-        const sel = t.id === st.effective;
-        return `<button class="theme-card${sel ? " selected" : ""}" data-theme-id="${t.id}"${follow ? " disabled" : ""}>` +
-          `<span class="theme-swatch" style="background:${t.swatch}"></span>` +
-          `<span class="theme-name">${esc(t.name)}${sel ? " " + I("check-circle", { size: 16, cls: "ico accent" }) : ""}</span>` +
-          `<span class="theme-desc">${esc(t.desc)}</span></button>`;
-      }).join("") + `</div>` +
-      `<div class="hint" style="margin-top:12px">Auto matches your computer's Light or Dark Mode. Terminal re-skins the whole dashboard as a blue-on-black text dashboard; Modern lays a Bliss wallpaper under frosted-glass panels; Windows 95 turns it into a teal desktop with beveled silver windows. Your data and math stay exactly the same.</div></div>`;
+      `<div class="theme-grid">` + PROFESSIONAL.concat(MAIN).map(themeCard).join("") + `</div>` +
+      `<div class="hint" style="margin-top:12px">Professional is the clean flat navy look from the phone. Auto and Professional Auto follow your computer's Light or Dark Mode. Terminal re-skins the whole dashboard as a blue-on-black text dashboard; Modern lays a Bliss wallpaper under frosted-glass panels; Windows 95 turns it into a teal desktop with beveled silver windows. Your data and math stay exactly the same.</div></div>` +
+      archivedPanel;
 
     box.querySelector("#theme-follow").addEventListener("change", async e => {
       await SyncEngine.setThemeMode(e.target.checked ? "phone" : "manual");
@@ -363,5 +384,5 @@ const SettingsUI = (() => {
   // Back-compat: old callers used SettingsUI.load() for the AI page.
   async function load() { await renderAI(document.getElementById("settings-ai-body")); }
 
-  return { load, reset, renderAI, renderAppearance, renderDevice, applyCachedTheme, THEMES };
+  return { load, reset, renderAI, renderAppearance, renderDevice, applyCachedTheme, THEMES, PROFESSIONAL, MAIN, ARCHIVED };
 })();

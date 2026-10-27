@@ -205,20 +205,41 @@ const SyncEngine = (() => {
   // blob ("Match my phone", the default). When the phone hasn't shared one
   // (older app builds) or the user turned matching off, the manual pick
   // saved in this browser is used. Nothing theme-related lives on the server.
-  const VALID_THEMES = ["auto", "light", "dark", "terminal", "modern", "win95"];
+  // Exact phone ids from ThemePreference.swift (underscored Professional family).
+  const VALID_THEMES = [
+    "auto", "light", "dark", "terminal", "modern", "win95",
+    "professional_auto", "professional_light", "professional_dark",
+  ];
 
   function normalizeTheme(v) {
     if (v == null) return null;
+    // Strip punctuation so "professional_light", "Professional Light", and
+    // "professional-light" all collapse to the same key. Professional must be
+    // matched BEFORE the bare light/dark/auto checks, or "professionallight"
+    // would incorrectly become "light".
     const s = String(v).toLowerCase().replace(/[^a-z0-9]/g, "");
     if (!s) return null;
+    const exact = {
+      auto: "auto", light: "light", dark: "dark", terminal: "terminal",
+      modern: "modern", win95: "win95",
+      professionalauto: "professional_auto",
+      professionallight: "professional_light",
+      professionaldark: "professional_dark",
+    };
+    if (exact[s]) return exact[s];
     if (VALID_THEMES.includes(s)) return s;
+    if (s.includes("professional")) {
+      if (s.includes("light")) return "professional_light";
+      if (s.includes("dark")) return "professional_dark";
+      return "professional_auto";
+    }
     if (s.includes("win95") || s.includes("windows95") || s.includes("windows")) return "win95";
     if (s.includes("terminal")) return "terminal";
     if (s.includes("modern") || s.includes("frosted") || s.includes("glass") || s.includes("bliss")) return "modern";
     if (s.includes("auto") || s.includes("system")) return "auto";
     if (s.includes("light")) return "light";
     if (s.includes("dark") || s.includes("classic")) return "dark";
-    return null;
+    return null; // unknown ids fall back gracefully via callers
   }
 
   function blobTheme(backup) {
@@ -301,14 +322,15 @@ const SyncEngine = (() => {
   }
 
   function applyTheme(theme) {
-    // App themes: auto, light, dark, terminal, modern, win95.
-    // "auto" follows the OS light/dark setting.
-    const valid = ["auto", "light", "dark", "terminal", "modern", "win95"];
-    let t = valid.includes(theme) ? theme : "auto";
+    // App themes include the Professional family. "auto" and
+    // "professional_auto" follow the OS light/dark setting.
+    let t = VALID_THEMES.includes(theme) ? theme : "auto";
     let applied = t;
+    const prefersLight = !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches);
     if (t === "auto") {
-      applied = (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches)
-        ? "light" : "dark";
+      applied = prefersLight ? "light" : "dark";
+    } else if (t === "professional_auto") {
+      applied = prefersLight ? "professional_light" : "professional_dark";
     }
     document.documentElement.setAttribute("data-theme", applied);
     // Keep the login logo and Umbrel tile icon on the active theme.
@@ -317,7 +339,10 @@ const SyncEngine = (() => {
     // Keep the PWA chrome in sync with the theme.
     document.documentElement.setAttribute("data-theme-pref", t);
     const meta = document.querySelector('meta[name="theme-color"]');
-    const colors = { dark: "#0e121d", light: "#ffffff", win95: "#008080", modern: "#2a7fc0", terminal: "#000000" };
+    const colors = {
+      dark: "#0e121d", light: "#ffffff", win95: "#008080", modern: "#2a7fc0", terminal: "#000000",
+      professional_light: "#F4F5F7", professional_dark: "#0A1120",
+    };
     if (meta) meta.setAttribute("content", colors[applied] || colors.dark);
     try { window.dispatchEvent(new CustomEvent("mb:theme", { detail: { pref: t, applied } })); } catch (e) {}
     return t; // return the preference (auto stays auto), not the resolved theme
@@ -326,7 +351,8 @@ const SyncEngine = (() => {
   // "auto" follows the OS live.
   try {
     window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
-      if (document.documentElement.getAttribute("data-theme-pref") === "auto") applyTheme("auto");
+      const pref = document.documentElement.getAttribute("data-theme-pref");
+      if (pref === "auto" || pref === "professional_auto") applyTheme(pref);
     });
   } catch (e) {}
 

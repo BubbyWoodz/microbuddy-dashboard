@@ -92,17 +92,37 @@ SESSION_TIMEOUT = 86400 * 30  # 30 days
 _JWKS_CACHE: dict = {"keys": None, "fetched_at": 0}
 _JWKS_TTL = 86400  # refresh Apple's public keys daily
 
-VALID_THEMES = {"dark", "light", "win95", "modern", "terminal"}
+# CSS data-theme values the Umbrel tile icon endpoint understands.
+# Professional Auto resolves client-side; the tile uses light/dark variants.
+VALID_THEMES = {
+    "dark", "light", "win95", "modern", "terminal",
+    "professional_light", "professional_dark",
+}
 
 def normalize_theme(t: str) -> str | None:
-    """Map iOS/display theme names to dashboard CSS theme names."""
+    """Map iOS/display theme names to dashboard CSS theme names.
+
+    Professional must be matched before bare light/dark, or
+    'professionallight' would collapse to 'light'.
+    """
     if not t:
         return None
     s = "".join(c for c in t.lower() if c.isalnum())
-    # Direct match
+    exact = {
+        "dark": "dark", "light": "light", "win95": "win95",
+        "modern": "modern", "terminal": "terminal",
+        "professionallight": "professional_light",
+        "professionaldark": "professional_dark",
+        "professionalauto": "professional_light",  # tile icon: resolve Auto to Light
+    }
+    if s in exact:
+        return exact[s]
     if s in VALID_THEMES:
         return s
-    # iOS variations
+    if "professional" in s:
+        if "dark" in s:
+            return "professional_dark"
+        return "professional_light"
     if "win95" in s or "windows95" in s:
         return "win95"
     if "terminal" in s:
@@ -139,7 +159,7 @@ APP_BUNDLE_ID = _read_secret("APPLE_APP_BUNDLE_ID", ".apple_app_id")
 # reboot. Unlink (/api/pair/revoke) and /logout clear it and re-save, so a
 # wiped login can never be resurrected by a restart.
 SESSIONS: dict[str, dict] = {}
-DASHBOARD_VERSION = "2.0.14"
+DASHBOARD_VERSION = "2.0.15"
 # Server state lives on the mounted users volume (/app/users), NOT in the
 # image's /app: an app update replaces the container, and anything outside a
 # volume (the old /app/.sessions.json, /app/.widget_token) vanished with it,
@@ -576,7 +596,7 @@ def _user_path(sub: str) -> str:
     return os.path.join(USERS_DIR, _safe_sub(sub) + ".json")
 
 
-THEMES = ("auto", "light", "dark", "terminal", "modern", "win95")
+THEMES = ("auto", "light", "dark", "terminal", "modern", "win95", "professional_auto", "professional_light", "professional_dark")
 
 
 def default_prefs() -> dict:
